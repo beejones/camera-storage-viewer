@@ -51,7 +51,6 @@ Locally, [docker-compose.yml](docker-compose.yml) publishes these ports.
 In Azure, the ACI container group must expose the same ports.
 
 Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).
-Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).
 
 If PASV uploads fail in Azure, you usually need to set:
 - `FTP_PUBLIC_HOST` to your public DNS name or IP (so PASV replies contain a reachable address)
@@ -71,7 +70,8 @@ Safety:
 Dry-run: list files under `/data/incoming` older than a cutoff:
 
 ```bash
-python scripts/deploy/azure_storage_cleanup.py \
+
+python3 scripts/deploy/azure_storage_cleanup.py \
 	--resource-group camera-storage-viewer-rg \
 	--before-date 2026-01-01
 ```
@@ -79,7 +79,7 @@ python scripts/deploy/azure_storage_cleanup.py \
 Apply deletion:
 
 ```bash
-python scripts/deploy/azure_storage_cleanup.py \
+python3 scripts/deploy/azure_storage_cleanup.py \
 	--resource-group camera-storage-viewer-rg \
 	--before-date 2026-01-01 \
 	--apply
@@ -88,7 +88,7 @@ python scripts/deploy/azure_storage_cleanup.py \
 Delete everything under `/data/incoming`:
 
 ```bash
-python scripts/deploy/azure_storage_cleanup.py \
+python3 scripts/deploy/azure_storage_cleanup.py \
 	--resource-group camera-storage-viewer-rg \
 	--all \
 	--apply

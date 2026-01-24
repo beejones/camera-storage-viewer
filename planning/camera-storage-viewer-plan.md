@@ -127,6 +127,13 @@ Performance notes:
 - Lazy-load thumbnails (only fetch what’s visible in the viewport).
 - Provide smaller thumbnail sizes (e.g. 160px wide) for timeline strip.
 
+Interaction details (to match the “pro” NVR feel):
+- Click a clip block to start playback at clip start.
+- Scrub timeline to seek; snap to nearest clip if outside recorded time.
+- Keyboard shortcuts: space play/pause, ←/→ seek 5s, shift+←/→ seek 30s.
+- Hover over timeline shows a preview thumbnail + timestamp.
+- Zoom timeline (mouse wheel / buttons) and keep playback time centered.
+
 ## Security
 - Strong FTP credentials (unique per camera).
 - Prefer FTPS (explicit TLS) if camera supports it; if not, mitigate:
@@ -265,3 +272,5 @@ Deploy (`.env.deploy`):
 - Uploads are attributed to the correct camera and stored under a stable layout.
 - Web UI lists cameras and shows clips on a per-day timeline.
 - Clip playback works in-browser and clip download works.
+- Index DB is populated from stored clips (no manual refresh required).
+- Timeline shows thumbnails (uploaded or generated) at least on hover.
