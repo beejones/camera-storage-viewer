@@ -37,6 +37,8 @@ FTP will be available at `localhost:21`.
 
 Viewer API will be available at `http://localhost:8081`.
 
+Viewer UI will be available at `http://localhost:8081/`.
+
 Uploaded files land under:
 - `out/incoming/<camera_id>/...`
 
@@ -63,6 +65,8 @@ curl -I http://localhost:8081/media/<clip_id>
 Optional auth:
 - Set `VIEWER_AUTH_TOKEN` in `.env`
 - Send `Authorization: Bearer <token>`
+
+Note: the UI includes a local "Token" field (stored in your browser localStorage) and will send it as `Authorization: Bearer ...`.
 
 Thumbnails:
 - If a sidecar image exists next to a clip (e.g. `clip1.jpg` next to `clip1.mp4`), the API serves it.

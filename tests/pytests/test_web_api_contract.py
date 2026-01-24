@@ -20,6 +20,9 @@ def test_api_contract_smoke(tmp_path: Path, monkeypatch) -> None:
 
     client = TestClient(app)
 
+    home = client.get("/")
+    assert home.status_code == 200
+
     cameras = client.get("/api/cameras").json()
     assert [c["camera_id"] for c in cameras] == ["front"]
 

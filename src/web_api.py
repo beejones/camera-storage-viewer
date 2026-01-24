@@ -7,6 +7,8 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from src.thumbnails import ensure_thumbnail, generated_thumbnail_path, load_thumbnail_config
 from src.viewer_db import (
@@ -35,6 +37,15 @@ def _require_token(request: Request) -> None:
 AuthDep = Annotated[None, Depends(_require_token)]
 
 app = FastAPI(title="Camera Storage Viewer")
+
+_BASE_DIR = Path(__file__).resolve().parent
+app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+
+
+@app.get("/")
+def viewer_home(request: Request) -> object:
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.get("/healthz")
