@@ -69,7 +69,7 @@ If the above doesn't work:
 
 ```bash
 echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-docker pull ghcr.io/<owner>/protected-azure-container:latest
+docker pull ghcr.io/<owner>/camera-storage-viewer:latest
 ```
 
 If you accidentally paste a token into chat/logs, revoke it immediately and generate a new one.

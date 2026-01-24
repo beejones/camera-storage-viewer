@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Deploy protected-azure-container to Azure Container Instances (ACI).
+"""Deploy camera-storage-viewer to Azure Container Instances (ACI).
 
 Model:
 - Multi-container group:
-  - protected-azure-container app (code-server)
+  - camera-storage-viewer app (code-server)
   - Caddy TLS proxy (HTTPS + reverse proxy; Basic Auth)
 - Secrets:
   - Full .env is stored as a Key Vault secret (default: 'env')
@@ -157,7 +157,7 @@ def generate_deploy_yaml(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Deploy protected-azure-container to Azure Container Instances")
+    parser = argparse.ArgumentParser(description="Deploy camera-storage-viewer to Azure Container Instances")
 
     # These can come from --env-file (recommended) so they are not required.
     parser.add_argument("--resource-group", "-g", required=False, default=None)
@@ -455,8 +455,8 @@ def main() -> None:
     name = (
         args.container_name
         or os.getenv(VarsEnum.AZURE_CONTAINER_NAME.value)
-        or "protected-azure-container"
-    ).strip() or "protected-azure-container"
+        or "camera-storage-viewer"
+    ).strip() or "camera-storage-viewer"
     dns_label = (args.dns_label or name).strip().lower()
 
     storage_name = (args.storage_name or f"{rg}stg").replace("-", "")
@@ -470,7 +470,7 @@ def main() -> None:
     if args.keyvault_name:
         kv_name = args.keyvault_name
     else:
-        # e.g. "protected-azure-container-rg" -> "protectedazurecontainkv"
+        # e.g. "camera-storage-viewer-rg" -> "protectedazurecontainkv"
         base = "".join([c for c in rg.lower() if c.isalnum()])
         kv_name = f"{base}kv"[:24]
 
@@ -578,7 +578,7 @@ def main() -> None:
         kv_secret_name=args.image_secret,
         interactive=interactive,
         secret=False,
-        prompt_label="Container image (e.g. ghcr.io/<owner>/protected-azure-container:tag)",
+        prompt_label="Container image (e.g. ghcr.io/<owner>/camera-storage-viewer:tag)",
         persist_to_kv=persist_to_kv,
     )
     if not image:
@@ -737,6 +737,17 @@ def main() -> None:
             default=registry_username_default,
         )
 
+        # Common footgun: env.deploy.example uses a placeholder image.
+        # If the user forgot to change it, we'll rewrite it to the resolved username.
+        # This avoids GHCR errors like: denied: permission_denied: create_package
+        if registry_username:
+            placeholder_prefixes = ("ghcr.io/your-user/", "ghcr.io/YOUR-USER/", "ghcr.io/your_user/")
+            for prefix in placeholder_prefixes:
+                if image.startswith(prefix):
+                    image = f"ghcr.io/{registry_username}/" + image[len(prefix) :]
+                    print(f"🔧 [docker] Rewrote image to: {image}")
+                    break
+
         registry_password = resolve_value(
             name="ghcr_token",
             arg_value=None,
@@ -773,13 +784,18 @@ def main() -> None:
         docker_context = (args.docker_context or str(repo_root)).strip() or str(repo_root)
         dockerfile = (args.dockerfile or "").strip() or None
 
-        if not dockerfile and not args.docker_context:
-            if (repo_root / "docker" / "Dockerfile").exists():
-                # If docker/Dockerfile exists and no context given,
-                # assume the user wants to build the inner "docker" directory as a context.
-                docker_context = str(repo_root / "docker")
-                # Leave dockerfile=None so it defaults to "Dockerfile" inside that context.
-                dockerfile = None
+        # Auto-detect our Dockerfile location.
+        # Keep default context as repo root so COPY can include files like requirements.txt.
+        if not dockerfile:
+            candidate = repo_root / "docker" / "Dockerfile"
+            if candidate.exists():
+                dockerfile = str(candidate)
+
+        # Resolve relative Dockerfile paths against repo root for determinism.
+        if dockerfile:
+            dockerfile_path = Path(dockerfile)
+            if not dockerfile_path.is_absolute():
+                dockerfile = str((repo_root / dockerfile_path).resolve())
 
         if build_requested:
             print(f"🏗️  [docker] building image: {image}")

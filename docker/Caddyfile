@@ -2,11 +2,13 @@
 # All authentication is handled here - code-server runs with --auth none
 
 {$PUBLIC_DOMAIN} {
-    tls {$ACME_EMAIL}
+    # Local prototype default: serve HTTPS with an internal (self-signed) cert.
+    # For production with a real domain, switch to ACME/Let's Encrypt configuration.
+    tls internal
     header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
     
     # Single Basic Auth layer for all routes
-    basicauth /* {
+    basic_auth /* {
         {$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
     }
     

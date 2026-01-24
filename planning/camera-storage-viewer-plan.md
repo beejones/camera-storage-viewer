@@ -4,7 +4,7 @@
 Deploy an Azure Container Instance (ACI) that:
 1. Acts as an FTP endpoint for one or more cameras (starting with Reolink) to upload recordings/snapshots.
 2. Provides a web UI to browse cameras and playback recordings on a timeline, with per-clip download.
-3. Follows the “protected Azure container” model (cloned from https://github.com/beejones/protected-azure-container/):
+3. Follows the “protected Azure container” model (cloned from https://github.com/beejones/camera-storage-viewer/):
   - secrets stored in Key Vault
   - access via Managed Identity
   - viewer authentication enforced via Caddy (as already set up)
@@ -28,7 +28,7 @@ Non-goals (initially):
 ### Container Group
 Keep the existing 2-container pattern and add an application process:
 - `tls-proxy` (Caddy): HTTPS + Basic Auth for the web UI (as today).
-- `protected-azure-container`: the app processes (FTP server + web API/UI). (No code-server for this project.)
+- `camera-storage-viewer`: the app processes (FTP server + web API/UI). (No code-server for this project.)
 
 Expose ports:
 - HTTPS: `443` (Caddy)

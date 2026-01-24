@@ -41,7 +41,7 @@ jobs:
       with:
         context: docker
         push: false
-        tags: protected-azure-container:latest
+        tags: camera-storage-viewer:latest
     
     - name: Build Caddy image (check)
       run: |

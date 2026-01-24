@@ -1,107 +1,81 @@
-# Protected Azure Container
+# Camera Storage Viewer
 
-A world-class protected container setup featuring:
-- **VS Code in browser** via [code-server](https://github.com/coder/code-server)
-- **TLS termination** with automatic Let's Encrypt certificates via Caddy
-- **Azure Key Vault** integration for secrets management
-- **Azure Managed Identity** for secure authentication
-- **GitHub Actions** CI/CD with OIDC authentication
+This repo is evolving into an Azure-hosted camera recorder + viewer.
 
-## Quick Start (Local Development)
+Prototype (this step): an **FTP server** you can point one or more cameras at (starting with Reolink), so we can validate uploads and networking (PASV, port ranges) end-to-end.
+
+## Quick Start (Local FTP Prototype)
+
+1) Create `.env`:
 
 ```bash
-# Copy example environment files
 cp env.example .env
-cp env.deploy.example .env.deploy
+```
 
-# Generate a Basic Auth password hash
-docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your-password'
+2) Set the required values in `.env`:
+- `BASIC_AUTH_HASH` (for the Caddy-protected web endpoint)
+- FTP users (choose one):
+	- single camera: `FTP_USERNAME`, `FTP_PASSWORD`, `FTP_CAMERA_ID`
+	- multi-camera: `FTP_USERS_JSON`
 
-# Add the hash to .env
-echo 'BASIC_AUTH_USER=admin' >> .env
-echo 'BASIC_AUTH_HASH=<paste-hash-here>' >> .env
+3) Start containers:
 
-# Start the containers
+```bash
 docker compose up --build
 ```
 
-Open `https://localhost` (accept the self-signed cert warning for local dev).
+This starts the app container (FTP server + internal services). The TLS proxy is disabled by default for the prototype.
 
-## Architecture
-
-Two containers in a container group:
-
-| Container | Purpose | Ports |
-|-----------|---------|-------|
-| `protected-azure-container` | code-server (VS Code) | 8080 (internal) |
-| `tls-proxy` (Caddy) | TLS termination + Basic Auth | 80, 443 |
-
-```
-Internet → Caddy (443) → [Basic Auth] → code-server (8080)
-```
-
-## Documentation
-
-- [Azure Container Deployment](docs/deploy/AZURE_CONTAINER.md) - Deploy to Azure Container Instances
-- [code-server Setup](docs/CODE_SERVER.md) - Configuration and customization
-- [Env Schema](docs/deploy/ENV_SCHEMA.md) - How to add vars/secrets to the schema
-- [Add Your App](docs/deploy/ADD_YOUR_APP.md) - How to bundle and run your own app in this container
-
-## Use This Repo As A Template
-
-If you want to use this project as a base for a new repo that needs a protected Azure container:
-
-### Option A: GitHub template flow (recommended)
-
-Use GitHub’s “Use this template” button, or use `gh` with the current repo as the template:
+To also start the Caddy TLS proxy (requires `BASIC_AUTH_HASH` in `.env`):
 
 ```bash
-gh repo create <your-org>/<new-repo> --public --template beejones/protected-azure-container
+docker compose --profile web up --build
 ```
 
-Note: template-based repos are a snapshot. They do not automatically stay connected to this repo for future updates.
+FTP will be available at `localhost:21`.
 
-### Option B: Clone and re-init git
+Uploaded files land under:
+- `out/incoming/<camera_id>/...`
+
+### Test Upload (without a camera)
+
+Example using `curl`:
 
 ```bash
-git clone https://github.com/beejones/protected-azure-container.git my-new-repo
-cd my-new-repo
-
-# Keep a link to the original repo so you can pull updates later
-git remote rename origin upstream
-
-# Point "origin" at your new repo
-git remote add origin git@github.com:<your-org>/<new-repo>.git
-
-# Push your new repo
-git push -u origin main
+echo "hello" > /tmp/test.txt
+curl -T /tmp/test.txt ftp://$FTP_USERNAME:$FTP_PASSWORD@localhost:21/
 ```
 
-Later, you can pull changes from this repo with:
+If you use `FTP_USERS_JSON`, pick one user/password from that list.
 
-```bash
-git pull upstream main
+## FTP Networking Notes (Important)
+
+FTP requires:
+- control port `21`
+- a passive range (default in this repo): `50000-50100`
+
+Locally, [docker-compose.yml](docker-compose.yml) publishes these ports.
+In Azure, the ACI container group must expose the same ports.
+
+If PASV uploads fail in Azure, you usually need to set:
+- `FTP_PUBLIC_HOST` to your public DNS name or IP (so PASV replies contain a reachable address)
+
+## Multi-Camera Configuration
+
+Recommended: `FTP_USERS_JSON` in `.env` as a JSON list:
+
+```text
+FTP_USERS_JSON=[{"camera_id":"front","username":"front","password":"..."},{"camera_id":"back","username":"back","password":"..."}]
 ```
 
-After that, update the deployment settings in `.env.deploy` and runtime settings in `.env`.
+Each user is jailed to its own folder: `out/incoming/<camera_id>`.
 
-When you need to add new configuration keys, follow the schema guide: [docs/deploy/ENV_SCHEMA.md](docs/deploy/ENV_SCHEMA.md).
+## Where This Is Going
 
-## Pre-installed Extensions
-
-- **Roo Code** (`rooveterinaryinc.roo-cline`) - AI coding assistant
-- **GitHub Pull Requests** (`GitHub.vscode-pull-request-github`) - PR management
-
-## Environment Variables
-
-This repo uses a strict, schema-driven set of env keys.
-
-- Runtime config lives in `.env` (and is uploaded to Key Vault as a single secret).
-- Deploy-time config lives in `.env.deploy`.
-- Deployment reads `.env` first, then `.env.deploy` on top (deploy-time overrides).
-
-See env.example and env.deploy.example for the canonical keys.
-If you need to add a new key, follow: [docs/deploy/ENV_SCHEMA.md](docs/deploy/ENV_SCHEMA.md).
+Next steps are documented in [planning/camera-storage-viewer-plan.md](planning/camera-storage-viewer-plan.md):
+- ingest/index recordings into `out/videos/<camera_id>/...`
+- timeline playback + downloads in a web UI
+- retention policy (e.g. delete recordings older than 30 days)
 
 ## License
 

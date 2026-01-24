@@ -1,6 +1,6 @@
 # Azure Container Deployment (ACI)
 
-Deploy **protected-azure-container** to **Azure Container Instances (ACI)** with:
+Deploy **camera-storage-viewer** to **Azure Container Instances (ACI)** with:
 
 - **code-server** (VS Code in browser) as the main interface
 - **Caddy** sidecar for **TLS** with automatic Let's Encrypt certificates
@@ -14,7 +14,7 @@ ACI container group with 2 containers:
 
 | Container | Purpose | Ports |
 |-----------|---------|-------|
-| `protected-azure-container` | code-server | 8080 (internal) |
+| `camera-storage-viewer` | code-server | 8080 (internal) |
 | `tls-proxy` (Caddy) | TLS + Basic Auth | 80, 443 (public) |
 
 ```
@@ -36,7 +36,7 @@ The deploy script auto-creates resources if they don't exist:
 
 ```bash
 python scripts/deploy/azure_deploy_container.py \
-  --resource-group protected-azure-container-rg \
+  --resource-group camera-storage-viewer-rg \
   --location westeurope
 ```
 
@@ -65,7 +65,7 @@ BASIC_AUTH_HASH=$2a$14$...your-hash...
 
 ```bash
 python scripts/deploy/azure_upload_env.py \
-  --vault protected-azure-container-rg-kv \
+  --vault camera-storage-viewer-rg-kv \
   --env-file .env
 ```
 
@@ -73,8 +73,8 @@ python scripts/deploy/azure_upload_env.py \
 
 ```bash
 python scripts/deploy/azure_deploy_container.py \
-  --resource-group protected-azure-container-rg \
-  --image ghcr.io/your-user/protected-azure-container:latest \
+  --resource-group camera-storage-viewer-rg \
+  --image ghcr.io/<your-gh-username>/camera-storage-viewer:latest \
   --public-domain your-domain.com \
   --acme-email you@your-domain.com \
   --env-file .env.deploy
@@ -86,8 +86,8 @@ Point your domain CNAME to the ACI FQDN:
 
 ```bash
 az container show \
-  --name protected-azure-container \
-  --resource-group protected-azure-container-rg \
+  --name camera-storage-viewer \
+  --resource-group camera-storage-viewer-rg \
   --query ipAddress.fqdn -o tsv
 ```
 
@@ -104,12 +104,12 @@ Result: `<dns-label>.<location>.azurecontainer.io`
 
 ```bash
 # code-server container
-az container logs --resource-group protected-azure-container-rg \
-  --name protected-azure-container --container-name protected-azure-container
+az container logs --resource-group camera-storage-viewer-rg \
+  --name camera-storage-viewer --container-name camera-storage-viewer
 
 # Caddy container
-az container logs --resource-group protected-azure-container-rg \
-  --name protected-azure-container --container-name tls-proxy
+az container logs --resource-group camera-storage-viewer-rg \
+  --name camera-storage-viewer --container-name tls-proxy
 ```
 
 ### Common Issues
@@ -135,8 +135,8 @@ Triggers on: **Workflow Dispatch** (Manual)
    - `AZURE_CLIENT_ID` (OIDC App ID)
    - `AZURE_TENANT_ID`
    - `AZURE_SUBSCRIPTION_ID`
-   - `AZURE_RESOURCE_GROUP` (e.g. `protected-azure-container-rg`)
-   - `AZURE_CONTAINER_NAME` (e.g. `protected-azure-container`)
+   - `AZURE_RESOURCE_GROUP` (e.g. `camera-storage-viewer-rg`)
+   - `AZURE_CONTAINER_NAME` (e.g. `camera-storage-viewer`)
    - `AZURE_PUBLIC_DOMAIN` (e.g. `your-domain.com`)
    - `AZURE_ACME_EMAIL`
    - `BASIC_AUTH_USER`

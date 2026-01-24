@@ -9,6 +9,9 @@ python-dotenv==1.2.1
 # For generating Caddy-compatible bcrypt hashes for Basic Auth
 bcrypt>=4.2.0
 
+# FTP server (camera uploads)
+pyftpdlib>=2.0.0
+
 # Azure ACI deployment helpers
 azure-identity>=1.17.0
 azure-keyvault-secrets>=4.8.0
