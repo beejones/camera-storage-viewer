@@ -33,6 +33,23 @@ services:
     networks:
       - internal
 
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    container_name: camera-storage-viewer-web
+    restart: unless-stopped
+    environment:
+      OUT_DIR: /data
+      WEB_PORT: 8081
+      VIEWER_AUTH_TOKEN: ${VIEWER_AUTH_TOKEN:-}
+    volumes:
+      - ./out:/data
+    ports:
+      - "8081:8081"
+    networks:
+      - internal
+
 networks:
   internal:
     driver: bridge

@@ -23,12 +23,46 @@ cp env.example .env
 docker compose up --build
 ```
 
-This starts the FTP server container.
+This starts:
+- the FTP server container (`ftp`)
+- the viewer backend API container (`web`) on `http://localhost:8081`
+
+If you only want FTP:
+
+```bash
+docker compose up --build ftp
+```
 
 FTP will be available at `localhost:21`.
 
+Viewer API will be available at `http://localhost:8081`.
+
 Uploaded files land under:
 - `out/incoming/<camera_id>/...`
+
+## Viewer API (Local)
+
+List cameras:
+
+```bash
+curl http://localhost:8081/api/cameras
+```
+
+List clips for a day (UTC date):
+
+```bash
+curl "http://localhost:8081/api/cameras/<camera_id>/clips?date=2026-01-24"
+```
+
+Stream a clip:
+
+```bash
+curl -I http://localhost:8081/media/<clip_id>
+```
+
+Optional auth:
+- Set `VIEWER_AUTH_TOKEN` in `.env`
+- Send `Authorization: Bearer <token>`
 
 ### Test Upload (without a camera)
 

@@ -134,13 +134,27 @@ Interaction details (to match the “pro” NVR feel):
 - Hover over timeline shows a preview thumbnail + timestamp.
 - Zoom timeline (mouse wheel / buttons) and keep playback time centered.
 
-## Security
-- Strong FTP credentials (unique per camera).
-- Prefer FTPS (explicit TLS) if camera supports it; if not, mitigate:
-  - restrict inbound IPs (if your ISP IP is stable)
-  - rotate credentials
-  - store credentials in Key Vault
-- FTP-only MVP; viewer authentication TBD.
+## API Contract (MVP)
+
+Principles:
+- API uses stable ids (`camera_id`, `clip_id`) and never leaks raw filesystem paths.
+- Streaming endpoint supports HTTP Range requests for efficient seeking.
+- Thumbnails are cacheable (ETag/Last-Modified) and available in multiple sizes.
+
+Endpoints (draft):
+- `GET /api/cameras` → list cameras + basic status (last_upload_at).
+- `GET /api/cameras/{camera_id}/clips?date=YYYY-MM-DD` → ordered clips with start_time, duration, and thumbnail availability.
+- `GET /api/clips/{clip_id}` → clip detail (camera_id, start_time, duration, size_bytes).
+- `GET /api/clips/{clip_id}/thumbnail?size=small|large` → JPEG/WEBP thumbnail.
+- `GET /media/{clip_id}` → MP4 streaming with `Accept-Ranges: bytes`.
+
+Auth (viewer):
+- MVP: single-user auth (basic login + session cookie) or pre-shared access token.
+- Production: SSO/OIDC (optional) and rate limits.
+
+## Security (Summary)
+- FTP hardening is defined in the **Production FTP Server (Security-First)** section below.
+- Viewer security: HTTPS only, authenticated access, and audit logs for downloads.
 
 ## Production FTP Server (Security-First)
 
