@@ -26,11 +26,14 @@ Completed (working prototype):
 - Per-camera folder layouts under `/data/incoming/<camera_id>/...`.
 - Deploy tooling + env schema in place; runtime env stored in Key Vault.
 - Operational tooling: safe cleanup utility for `/data/incoming` in Azure.
+- Viewer backend API implemented (cameras/clips/media/thumbnail).
+- Viewer UI implemented (sidebar + playback + timeline + hover thumbnail).
+- SQLite-backed clip index implemented (stored under `out/databases/index.sqlite`).
 
 Next (production direction):
 - Harden FTP for production (transport security, auth hardening, network controls, observability).
-- Build the viewer app: timeline + thumbnails + playback, inspired by the UI screenshot.
-- Ingest/index: move files from `/data/incoming` into a stable library layout with metadata DB.
+- Improve the viewer app: real clip durations, timeline scaling/zoom, and better thumbnail caching.
+- Ingest: move files from `/data/incoming` into a stable library layout (`/data/out/videos/...`) with richer metadata.
 
 ## Constraints / Reality Checks
 - **FTP in cloud is tricky** (NAT + passive ports). We must support **PASV** with a **fixed passive port range** and expose those ports from ACI.
@@ -264,8 +267,11 @@ Deploy (`.env.deploy`):
 
 ### Phase 1 — Local MVP (1–2 days)
 - [x] Implement FTP server + per-camera users and jailed directories.
-- [ ] Implement ingest/index + minimal web UI timeline.
-- [ ] Add tests for indexing and path safety.
+- [~] Implement ingest/index + minimal web UI timeline.
+  - Indexing is implemented (SQLite index scanning `out/incoming` and `out/videos`).
+  - A first-pass ingester exists (moves stable uploads from `out/incoming` → `out/videos/<camera_id>/YYYY/MM/DD`).
+  - Remaining: strict file validation rules + reliable duration extraction (ffprobe in production container).
+- [x] Add tests for indexing and path safety.
 
 ### Phase 2 — Azure MVP (1–2 days)
 - [x] Update deploy scripts/runtime to expose FTP + passive ports.
@@ -273,9 +279,9 @@ Deploy (`.env.deploy`):
 - [x] Validate uploads from camera to ACI.
 
 ### Phase 2b — Viewer UX MVP (1–3 days)
-- [ ] Implement camera list + camera detail pages matching the target layout (sidebar + stage + timeline).
-- [ ] Implement clip playback with HTTP Range support.
-- [ ] Implement timeline thumbnails (uploaded or generated) with lazy-loading.
+- [x] Implement camera list + camera detail pages matching the target layout (sidebar + stage + timeline).
+- [x] Implement clip playback with HTTP Range support.
+- [x] Implement timeline thumbnails (uploaded or generated) with lazy-loading.
 
 ### Phase 3 — Durable Storage + Scaling (later)
 - Optional: move clips to Azure Blob; serve via SAS URLs or proxy streaming.

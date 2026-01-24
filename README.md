@@ -42,6 +42,23 @@ Viewer UI will be available at `http://localhost:8081/`.
 Uploaded files land under:
 - `out/incoming/<camera_id>/...`
 
+## Ingest (Move uploads into library)
+
+Uploads initially land under `out/incoming/`. The viewer can index those directly, but for a stable library layout you can ingest them into:
+- `out/videos/<camera_id>/YYYY/MM/DD/...`
+
+Dry-run:
+
+```bash
+python3 scripts/ingest_once.py --out-dir ./out
+```
+
+Apply moves (default skips files newer than 60s):
+
+```bash
+python3 scripts/ingest_once.py --out-dir ./out --apply
+```
+
 ## Viewer API (Local)
 
 List cameras:

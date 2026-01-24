@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
+from shutil import which
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -14,6 +16,7 @@ class DbClip:
     camera_id: str
     abs_path: Path
     start_time: datetime
+    duration_seconds: float | None
     size_bytes: int
     mtime_ns: int
 
@@ -51,12 +54,18 @@ def init_db(db_path: Path) -> None:
               camera_id TEXT NOT NULL,
               rel_path TEXT NOT NULL,
               start_time_utc TEXT NOT NULL,
+              duration_seconds REAL,
               size_bytes INTEGER NOT NULL,
               mtime_ns INTEGER NOT NULL
             )
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_clips_camera_time ON clips(camera_id, start_time_utc)")
+
+        # Handle older DBs created before duration_seconds existed.
+        cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(clips)").fetchall()}
+        if "duration_seconds" not in cols:
+            conn.execute("ALTER TABLE clips ADD COLUMN duration_seconds REAL")
 
 
 def _iter_video_files(root: Path) -> list[Path]:
@@ -71,35 +80,72 @@ def _iter_video_files(root: Path) -> list[Path]:
     return files
 
 
-def update_index_from_incoming(*, out_dir: Path, db_path: Path) -> None:
+def _ffprobe_available() -> bool:
+    return which("ffprobe") is not None
+
+
+def _probe_duration_seconds(path: Path) -> float | None:
+    if not _ffprobe_available():
+        return None
+
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=nw=1:nk=1",
+        str(path),
+    ]
+
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True).strip()
+        if not out:
+            return None
+        return float(out)
+    except Exception:
+        return None
+
+
+def _iter_media_roots(out_dir: Path) -> list[tuple[str, Path]]:
+    # Scan both pre-ingest (incoming) and post-ingest (videos) locations.
+    return [
+        ("incoming", out_dir / "incoming"),
+        ("videos", out_dir / "videos"),
+    ]
+
+
+def update_index_from_storage(*, out_dir: Path, db_path: Path) -> None:
     init_db(db_path)
 
-    incoming_root = out_dir / "incoming"
-    if not incoming_root.exists():
-        return
+    upserts: list[tuple[str, str, str, str, float | None, int, int]] = []
 
-    upserts: list[tuple[str, str, str, str, int, int]] = []
-
-    for camera_dir in incoming_root.iterdir():
-        if not camera_dir.is_dir():
+    for _root_name, root in _iter_media_roots(out_dir):
+        if not root.exists():
             continue
-        camera_id = camera_dir.name
-        for abs_path in _iter_video_files(camera_dir):
-            st = abs_path.stat()
-            rel_path = str(abs_path.relative_to(out_dir))
-            clip_id = _clip_id_for(rel_path, st.st_size, st.st_mtime_ns)
-            start_time = _utc_from_timestamp(st.st_mtime).isoformat()
-            upserts.append((clip_id, camera_id, rel_path, start_time, int(st.st_size), int(st.st_mtime_ns)))
+        for camera_dir in root.iterdir():
+            if not camera_dir.is_dir():
+                continue
+            camera_id = camera_dir.name
+            for abs_path in _iter_video_files(camera_dir):
+                st = abs_path.stat()
+                rel_path = str(abs_path.relative_to(out_dir))
+                clip_id = _clip_id_for(rel_path, st.st_size, st.st_mtime_ns)
+                start_time = _utc_from_timestamp(st.st_mtime).isoformat()
+                duration = _probe_duration_seconds(abs_path)
+                upserts.append((clip_id, camera_id, rel_path, start_time, duration, int(st.st_size), int(st.st_mtime_ns)))
 
     with _connect(db_path) as conn:
         conn.executemany(
             """
-            INSERT INTO clips(clip_id, camera_id, rel_path, start_time_utc, size_bytes, mtime_ns)
-            VALUES(?, ?, ?, ?, ?, ?)
+            INSERT INTO clips(clip_id, camera_id, rel_path, start_time_utc, duration_seconds, size_bytes, mtime_ns)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(clip_id) DO UPDATE SET
               camera_id=excluded.camera_id,
               rel_path=excluded.rel_path,
               start_time_utc=excluded.start_time_utc,
+              duration_seconds=COALESCE(excluded.duration_seconds, clips.duration_seconds),
               size_bytes=excluded.size_bytes,
               mtime_ns=excluded.mtime_ns
             """,
@@ -109,7 +155,7 @@ def update_index_from_incoming(*, out_dir: Path, db_path: Path) -> None:
 
 def list_cameras(*, out_dir: Path, db_path: Path) -> list[str]:
     init_db(db_path)
-    update_index_from_incoming(out_dir=out_dir, db_path=db_path)
+    update_index_from_storage(out_dir=out_dir, db_path=db_path)
 
     with _connect(db_path) as conn:
         rows = conn.execute("SELECT DISTINCT camera_id FROM clips ORDER BY camera_id").fetchall()
@@ -118,7 +164,7 @@ def list_cameras(*, out_dir: Path, db_path: Path) -> list[str]:
 
 def last_upload_time_for_camera(*, out_dir: Path, db_path: Path, camera_id: str) -> datetime | None:
     init_db(db_path)
-    update_index_from_incoming(out_dir=out_dir, db_path=db_path)
+    update_index_from_storage(out_dir=out_dir, db_path=db_path)
 
     with _connect(db_path) as conn:
         row = conn.execute(
@@ -132,7 +178,7 @@ def last_upload_time_for_camera(*, out_dir: Path, db_path: Path, camera_id: str)
 
 def list_clips_for_day(*, out_dir: Path, db_path: Path, camera_id: str, day: date) -> list[DbClip]:
     init_db(db_path)
-    update_index_from_incoming(out_dir=out_dir, db_path=db_path)
+    update_index_from_storage(out_dir=out_dir, db_path=db_path)
 
     day_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
@@ -140,7 +186,7 @@ def list_clips_for_day(*, out_dir: Path, db_path: Path, camera_id: str, day: dat
     with _connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT clip_id, camera_id, rel_path, start_time_utc, size_bytes, mtime_ns
+            SELECT clip_id, camera_id, rel_path, start_time_utc, duration_seconds, size_bytes, mtime_ns
             FROM clips
             WHERE camera_id=? AND start_time_utc BETWEEN ? AND ?
             ORDER BY start_time_utc
@@ -157,6 +203,7 @@ def list_clips_for_day(*, out_dir: Path, db_path: Path, camera_id: str, day: dat
                 camera_id=str(r["camera_id"]),
                 abs_path=abs_path,
                 start_time=datetime.fromisoformat(str(r["start_time_utc"])),
+                duration_seconds=(None if r["duration_seconds"] is None else float(r["duration_seconds"])),
                 size_bytes=int(r["size_bytes"]),
                 mtime_ns=int(r["mtime_ns"]),
             )
@@ -167,11 +214,11 @@ def list_clips_for_day(*, out_dir: Path, db_path: Path, camera_id: str, day: dat
 
 def resolve_clip_by_id(*, out_dir: Path, db_path: Path, clip_id: str) -> DbClip | None:
     init_db(db_path)
-    update_index_from_incoming(out_dir=out_dir, db_path=db_path)
+    update_index_from_storage(out_dir=out_dir, db_path=db_path)
 
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT clip_id, camera_id, rel_path, start_time_utc, size_bytes, mtime_ns FROM clips WHERE clip_id=?",
+            "SELECT clip_id, camera_id, rel_path, start_time_utc, duration_seconds, size_bytes, mtime_ns FROM clips WHERE clip_id=?",
             (clip_id,),
         ).fetchone()
 
@@ -184,6 +231,7 @@ def resolve_clip_by_id(*, out_dir: Path, db_path: Path, clip_id: str) -> DbClip 
         camera_id=str(row["camera_id"]),
         abs_path=abs_path,
         start_time=datetime.fromisoformat(str(row["start_time_utc"])),
+        duration_seconds=(None if row["duration_seconds"] is None else float(row["duration_seconds"])),
         size_bytes=int(row["size_bytes"]),
         mtime_ns=int(row["mtime_ns"]),
     )

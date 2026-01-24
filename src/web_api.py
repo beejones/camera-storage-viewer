@@ -85,7 +85,7 @@ def list_clips(
             clip_id=c.clip_id,
             camera_id=c.camera_id,
             start_time=c.start_time,
-            duration_seconds=None,
+            duration_seconds=c.duration_seconds,
             size_bytes=c.size_bytes,
             has_thumbnail=(
                 (c.find_thumbnail() is not None)
@@ -109,7 +109,7 @@ def get_clip(clip_id: str, _: AuthDep) -> ClipDetailOut:
         clip_id=clip.clip_id,
         camera_id=clip.camera_id,
         start_time=clip.start_time,
-        duration_seconds=None,
+        duration_seconds=clip.duration_seconds,
         size_bytes=clip.size_bytes,
         has_thumbnail=(clip.find_thumbnail() is not None),
         filename=clip.filename,
