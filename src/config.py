@@ -33,6 +33,7 @@ class FtpConfig:
     public_host: str | None
     passive_port_min: int
     passive_port_max: int
+    permit_foreign_addresses: bool
     out_dir: Path
     incoming_dir: Path
     spool_dir: Path
@@ -131,10 +132,14 @@ def load_ftp_config(env: Mapping[str, str] | None = None) -> FtpConfig:
         "FTP_PASSIVE_PORT_MIN", str(env.get("FTP_PASSIVE_PORT_MIN", "50000")), min_value=1, max_value=65535
     )
     passive_port_max = _require_int(
-        "FTP_PASSIVE_PORT_MAX", str(env.get("FTP_PASSIVE_PORT_MAX", "50100")), min_value=1, max_value=65535
+        "FTP_PASSIVE_PORT_MAX", str(env.get("FTP_PASSIVE_PORT_MAX", "50003")), min_value=1, max_value=65535
     )
     if passive_port_max < passive_port_min:
         raise ValueError("FTP_PASSIVE_PORT_MAX must be >= FTP_PASSIVE_PORT_MIN")
+
+    # Reolink (and some networks) can open the data connection from a different source IP
+    # than the control connection when behind NAT/LB. pyftpdlib rejects this by default.
+    permit_foreign_addresses = _truthy(str(env.get("FTP_PERMIT_FOREIGN_ADDRESSES", "true")))
 
     out_dir = Path(str(env.get("OUT_DIR", "/data")).strip() or "/data")
     incoming_dir = Path(str(env.get("FTP_INCOMING_DIR", out_dir / "incoming"))).expanduser()
@@ -167,6 +172,7 @@ def load_ftp_config(env: Mapping[str, str] | None = None) -> FtpConfig:
         public_host=public_host,
         passive_port_min=passive_port_min,
         passive_port_max=passive_port_max,
+        permit_foreign_addresses=permit_foreign_addresses,
         out_dir=out_dir,
         incoming_dir=incoming_dir,
         spool_dir=spool_dir,

@@ -45,10 +45,12 @@ If you use `FTP_USERS_JSON`, pick one user/password from that list.
 
 FTP requires:
 - control port `21`
-- a passive range (default in this repo): `50000-50100`
+- a passive range (default in this repo): `50000-50003`
 
 Locally, [docker-compose.yml](docker-compose.yml) publishes these ports.
 In Azure, the ACI container group must expose the same ports.
+
+Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).
 
 If PASV uploads fail in Azure, you usually need to set:
 - `FTP_PUBLIC_HOST` to your public DNS name or IP (so PASV replies contain a reachable address)
@@ -62,6 +64,14 @@ FTP_USERS_JSON=[{"camera_id":"front","username":"front","password":"..."},{"came
 ```
 
 Each user is jailed to its own folder: `out/incoming/<camera_id>`.
+
+## Security Notes (Read This)
+
+- Anyone who has valid FTP credentials for a user can read/list/download/delete files **inside that user's FTP home directory**.
+	In other words: the credentials *do* grant access to the uploaded files for that camera/user.
+- With per-camera users (`FTP_USERS_JSON`), a user is restricted to its own folder (they should not be able to browse other cameras’ folders).
+- This prototype is **plain FTP** (no TLS), so usernames/passwords and file contents may be observable on the network path.
+	If you need confidentiality/integrity in transit, use FTPS/SFTP or place the service behind a secure tunnel/VPN.
 
 ## Where This Is Going
 

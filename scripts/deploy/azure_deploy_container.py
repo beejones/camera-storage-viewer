@@ -113,7 +113,7 @@ def generate_deploy_yaml(
     data_share_name: str,
     ftp_port: int = 21,
     ftp_passive_port_min: int = 50000,
-    ftp_passive_port_max: int = 50100,
+    ftp_passive_port_max: int = 50003,
 ) -> str:
     """Back-compat re-export for tests and external callers."""
 
@@ -546,8 +546,8 @@ def main() -> None:
     # If the image is private and the user didn't specify any build/push flags,
     # default to publishing the image so a single command works end-to-end.
     if not (args.build or args.push or args.build_push):
-        # Default to build-push unless explicitly disabled via --no-publish
-        publish_default = True
+        # Default to build-push only for private GHCR images (or when user opts in)
+        publish_default = ghcr_private
         publish = publish_default if args.publish is None else bool(args.publish)
         if publish:
             build_requested = True
@@ -558,7 +558,14 @@ def main() -> None:
     registry_username: str | None = None
     registry_password: str | None = None
 
-    wants_registry_creds = bool(ghcr_private or push_requested)
+    # If credentials are already provided via env, include them in the ACI YAML even
+    # when GHCR_PRIVATE is not set. This avoids ACI (InaccessibleImage) surprises.
+    has_ghcr_creds_env = bool(
+        str(os.getenv(VarsEnum.GHCR_USERNAME.value) or "").strip()
+        and str(os.getenv(SecretsEnum.GHCR_TOKEN.value) or "").strip()
+    )
+
+    wants_registry_creds = bool(ghcr_private or push_requested or has_ghcr_creds_env)
     if wants_registry_creds:
         registry_server = "ghcr.io"
 
@@ -723,9 +730,21 @@ def main() -> None:
 
     ftp_port = int((os.getenv(VarsEnum.FTP_PORT.value) or "21").strip() or "21")
     ftp_passive_port_min = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MIN.value) or "50000").strip() or "50000")
-    ftp_passive_port_max = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MAX.value) or "50100").strip() or "50100")
+    ftp_passive_port_max = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MAX.value) or "50003").strip() or "50003")
 
-    yaml_text = generate_deploy_yaml(
+    # Azure Container Instances has a hard limit of 5 public ports per container group.
+    # FTP needs 1 control port + N passive ports.
+    ports_unique = sorted(set([ftp_port] + list(range(ftp_passive_port_min, ftp_passive_port_max + 1))))
+    if len(ports_unique) > 5:
+        raise SystemExit(
+            "ACI supports at most 5 public ports per container group. "
+            f"Your FTP port config would expose {len(ports_unique)} ports. "
+            "Set FTP_PASSIVE_PORT_MAX so the passive range is <= 4 ports (e.g. 50000-50003), "
+            "or deploy to a platform that supports larger port ranges."
+        )
+
+    try:
+        yaml_text = generate_deploy_yaml(
         name=name,
         location=location,
         image=image,
@@ -745,7 +764,9 @@ def main() -> None:
         ftp_port=ftp_port,
         ftp_passive_port_min=ftp_passive_port_min,
         ftp_passive_port_max=ftp_passive_port_max,
-    )
+        )
+    except ValueError as e:
+        raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
 
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
         f.write(yaml_text)

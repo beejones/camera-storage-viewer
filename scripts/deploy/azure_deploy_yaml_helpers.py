@@ -30,7 +30,7 @@ def generate_deploy_yaml(
     data_share_name: str,
     ftp_port: int = 21,
     ftp_passive_port_min: int = 50000,
-    ftp_passive_port_max: int = 50100,
+    ftp_passive_port_max: int = 50003,
 ) -> str:
     app_memory_gb = normalize_aci_memory_gb(memory_gb)
 
@@ -45,6 +45,18 @@ def generate_deploy_yaml(
         raise ValueError(f"ftp_passive_port_max must be 1-65535, got {ftp_passive_port_max}")
     if ftp_passive_port_max < ftp_passive_port_min:
         raise ValueError("ftp_passive_port_max must be >= ftp_passive_port_min")
+
+    # Azure Container Instances limitation: maximum 5 public IP ports per container group.
+    # FTP requires 1 control port + N passive ports, so the passive range must be small in ACI.
+    ports_unique = [ftp_port] + list(range(ftp_passive_port_min, ftp_passive_port_max + 1))
+    ports_unique = sorted(set(ports_unique))
+    if len(ports_unique) > 5:
+        raise ValueError(
+            "ACI container groups support at most 5 public ports; "
+            f"requested {len(ports_unique)} ports. "
+            "Reduce FTP_PASSIVE_PORT_MAX so the passive range is <= 4 ports "
+            "(e.g. 50000-50003), or deploy somewhere that supports larger port ranges."
+        )
 
     lines: list[str] = [
         "apiVersion: '2023-05-01'",
@@ -79,6 +91,8 @@ def generate_deploy_yaml(
     ]
 
     for p in range(ftp_passive_port_min, ftp_passive_port_max + 1):
+        if p == ftp_port:
+            continue
         lines += [
             indent(10, f"- port: {p}"),
             indent(12, "protocol: TCP"),
@@ -121,6 +135,8 @@ def generate_deploy_yaml(
     ]
 
     for p in range(ftp_passive_port_min, ftp_passive_port_max + 1):
+        if p == ftp_port:
+            continue
         lines.append(indent(6, f"- port: {p}"))
 
     lines += [

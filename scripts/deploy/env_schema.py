@@ -69,6 +69,7 @@ class VarsEnum(str, Enum):
     FTP_PUBLIC_HOST = "FTP_PUBLIC_HOST"
     FTP_PASSIVE_PORT_MIN = "FTP_PASSIVE_PORT_MIN"
     FTP_PASSIVE_PORT_MAX = "FTP_PASSIVE_PORT_MAX"
+    FTP_PERMIT_FOREIGN_ADDRESSES = "FTP_PERMIT_FOREIGN_ADDRESSES"
     FTP_INCOMING_DIR = "FTP_INCOMING_DIR"
     FTP_SPOOL_DIR = "FTP_SPOOL_DIR"
     FTP_USERNAME = "FTP_USERNAME"
@@ -170,7 +171,13 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
     EnvKeySpec(
         key=VarsEnum.FTP_PASSIVE_PORT_MAX,
         mandatory=False,
-        default="50100",
+        default="50003",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_PERMIT_FOREIGN_ADDRESSES,
+        mandatory=False,
+        default="true",
         targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
     ),
     EnvKeySpec(

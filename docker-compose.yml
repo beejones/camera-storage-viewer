@@ -12,7 +12,7 @@ services:
       FTP_BIND_HOST: 0.0.0.0
       FTP_PORT: 21
       FTP_PASSIVE_PORT_MIN: 50000
-      FTP_PASSIVE_PORT_MAX: 50100
+      FTP_PASSIVE_PORT_MAX: 50003
       FTP_PUBLIC_HOST: ${FTP_PUBLIC_HOST:-}
       FTP_CAMERA_ID: ${FTP_CAMERA_ID:-camera1}
       FTP_USERNAME: ${FTP_USERNAME:-}
@@ -29,7 +29,7 @@ services:
       - ./.env:/app/.env:ro
     ports:
       - "21:21"
-      - "50000-50100:50000-50100"
+      - "50000-50003:50000-50003"
     networks:
       - internal
 

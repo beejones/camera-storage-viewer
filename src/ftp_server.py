@@ -30,6 +30,19 @@ def serve() -> None:
     _ensure_dir(cfg.incoming_dir)
     _ensure_dir(cfg.spool_dir)
 
+    _LOG.info(
+        "FTP config: bind=%s:%s public_host=%s passive_ports=%s-%s permit_foreign_addresses=%s out_dir=%s incoming_dir=%s spool_dir=%s",
+        cfg.bind_host,
+        cfg.port,
+        cfg.public_host or "(none)",
+        cfg.passive_port_min,
+        cfg.passive_port_max,
+        cfg.permit_foreign_addresses,
+        cfg.out_dir,
+        cfg.incoming_dir,
+        cfg.spool_dir,
+    )
+
     authorizer = DummyAuthorizer()
 
     for user in cfg.users:
@@ -49,6 +62,12 @@ def serve() -> None:
     handler.authorizer = authorizer
 
     handler.passive_ports = range(cfg.passive_port_min, cfg.passive_port_max + 1)
+
+    # Allow data connections from a different source IP than the control connection.
+    # This is commonly needed behind NAT/load balancers (and observed with some cameras).
+    handler.permit_foreign_addresses = bool(cfg.permit_foreign_addresses)
+    if cfg.permit_foreign_addresses:
+        _LOG.info("permit_foreign_addresses enabled (accept data connections from different source IP)")
 
     if cfg.public_host:
         handler.masquerade_address = cfg.public_host

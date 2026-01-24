@@ -74,6 +74,8 @@ The script prints the ACI FQDN and the `ftp://` endpoint.
 
 Note: FTP passive mode requires opening the configured passive port range in ACI.
 
+ACI limitation: container groups support at most **5 public ports total**, so keep the passive range small (e.g. `50000-50003`).
+
 ## Troubleshooting
 
 ### View Logs
