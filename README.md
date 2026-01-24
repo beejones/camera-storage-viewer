@@ -66,6 +66,7 @@ This script runs via `az container exec` and deletes files from the mounted shar
 Safety:
 - Default is **dry-run** (prints what would be deleted)
 - Add `--apply` to actually delete
+- Empty directory cleanup is enabled by default; use `--no-delete-empty-dirs` to keep empty folders.
 
 Dry-run: list files under `/data/incoming` older than a cutoff:
 

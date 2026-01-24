@@ -26,9 +26,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import subprocess
 import sys
+import base64
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -90,66 +90,100 @@ def _require_under_data(path: str) -> str:
 def _python_cleanup_snippet(*, root_path: str, all_files: bool, before_date: str | None, apply: bool, delete_empty_dirs: bool) -> str:
     cutoff = (before_date or "").strip()
     mode = "all" if all_files else "before"
-    apply_int = 1 if apply else 0
-    del_empty_int = 1 if delete_empty_dirs else 0
 
-    # This code is passed to `python -c` inside `az container exec`.
-    # We quote the full snippet with shlex.quote(), so it is safe even if it contains
-    # characters like quotes or newlines.
-    return (
-        "import os,sys,datetime; "
-        f"root={json.dumps(root_path)}; "
-        f"mode={json.dumps(mode)}; "
-        f"cutoff={json.dumps(cutoff)}; "
-        f"apply={apply_int}; "
-        f"delete_empty={del_empty_int}; "
-        "if not os.path.isabs(root):\n    print(\"error: path must be absolute\", file=sys.stderr); sys.exit(2); "
-        "if root != \"/data\" and not root.startswith(\"/data/\"):\n    print(\"error: refusing to operate outside /data\", file=sys.stderr); sys.exit(2); "
-        "if mode == \"before\":\n"
-        "    if not cutoff:\n        print(\"error: missing cutoff\", file=sys.stderr); sys.exit(2);\n"
-        "    try:\n"
-        "        # Accept YYYY-MM-DD or full ISO; treat naive as local time.\n"
-        "        dt=datetime.datetime.fromisoformat(cutoff.replace(\"Z\",\"+00:00\"))\n"
-        "    except Exception as e:\n"
-        "        print(\"error: invalid --before-date (use YYYY-MM-DD or ISO): \" + str(e), file=sys.stderr); sys.exit(2)\n"
-        "    cutoff_ts=dt.timestamp()\n"
-        "else:\n"
-        "    cutoff_ts=None\n"
-        "deleted=0; kept=0; errors=0; seen=0;\n"
-        "for dirpath, dirnames, filenames in os.walk(root):\n"
-        "    for fn in filenames:\n"
-        "        full=os.path.join(dirpath, fn)\n"
-        "        try:\n"
-        "            st=os.stat(full)\n"
-        "        except FileNotFoundError:\n"
-        "            continue\n"
-        "        except Exception as e:\n"
-        "            print(\"warn: stat failed: \" + full + \" :: \" + str(e), file=sys.stderr); errors+=1; continue\n"
-        "        seen+=1\n"
-        "        should_del = True if mode==\"all\" else (st.st_mtime < cutoff_ts)\n"
-        "        if not should_del:\n"
-        "            kept+=1; continue\n"
-        "        if not apply:\n"
-        "            print(full)\n"
-        "            deleted+=1\n"
-        "            continue\n"
-        "        try:\n"
-        "            os.remove(full)\n"
-        "            deleted+=1\n"
-        "        except Exception as e:\n"
-        "            print(\"warn: delete failed: \" + full + \" :: \" + str(e), file=sys.stderr); errors+=1\n"
-        "if apply and delete_empty:\n"
-        "    # Remove empty dirs bottom-up (skip root itself).\n"
-        "    for dirpath, dirnames, filenames in os.walk(root, topdown=False):\n"
-        "        if dirpath == root:\n"
-        "            continue\n"
-        "        try:\n"
-        "            if not os.listdir(dirpath):\n"
-        "                os.rmdir(dirpath)\n"
-        "        except Exception:\n"
-        "            pass\n"
-        "print(f\"summary: scanned={seen} matched={deleted} kept={kept} errors={errors} apply={bool(apply)}\", file=sys.stderr)\n"
+    # ACI exec does not reliably perform shell-style quote parsing for --exec-command.
+    # To avoid quoting issues, we pass a whitespace-free python -c stub which base64-decodes
+    # and executes a real script body.
+    program = """
+import datetime
+import os
+import sys
+
+root = {root}
+mode = {mode}
+cutoff = {cutoff}
+apply = {apply}
+delete_empty = {delete_empty}
+
+if not os.path.isabs(root):
+    print("error:path_must_be_absolute", file=sys.stderr)
+    raise SystemExit(2)
+
+if root != "/data" and not root.startswith("/data/"):
+    print("error:refusing_outside_/data", file=sys.stderr)
+    raise SystemExit(2)
+
+cutoff_ts = None
+if mode == "before":
+    if not cutoff:
+        print("error:missing_cutoff", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        dt = datetime.datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+    except Exception as e:
+        print("error:invalid_before_date:" + str(e), file=sys.stderr)
+        raise SystemExit(2)
+    cutoff_ts = dt.timestamp()
+
+seen = 0
+matched = 0
+kept = 0
+errors = 0
+
+for dirpath, _, filenames in os.walk(root):
+    for fn in filenames:
+        full = os.path.join(dirpath, fn)
+        try:
+            st = os.stat(full)
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            print("warn:stat_failed:" + full + ":" + str(e), file=sys.stderr)
+            errors += 1
+            continue
+
+        seen += 1
+        should_del = True if mode == "all" else (st.st_mtime < cutoff_ts)
+        if not should_del:
+            kept += 1
+            continue
+
+        matched += 1
+        if not apply:
+            print(full)
+            continue
+
+        try:
+            os.remove(full)
+        except Exception as e:
+            print("warn:delete_failed:" + full + ":" + str(e), file=sys.stderr)
+            errors += 1
+
+if apply and delete_empty:
+    for dirpath, _, _ in os.walk(root, topdown=False):
+        if dirpath == root:
+            continue
+        try:
+            if not os.listdir(dirpath):
+                os.rmdir(dirpath)
+        except Exception:
+            pass
+
+print(
+    "summary:scanned=%s matched=%s kept=%s errors=%s apply=%s" % (seen, matched, kept, errors, bool(apply)),
+    file=sys.stderr,
+)
+""".strip().format(
+        root=json.dumps(root_path),
+        mode=json.dumps(mode),
+        cutoff=json.dumps(cutoff),
+        apply="True" if apply else "False",
+        delete_empty="True" if delete_empty_dirs else "False",
     )
+
+    payload = base64.b64encode(program.encode("utf-8")).decode("ascii")
+    # IMPORTANT: keep this stub free of whitespace so ACI exec arg splitting can't break it.
+    return f"exec(compile(__import__('base64').b64decode('{payload}'),'x','exec'))"
 
 
 def main() -> None:
@@ -162,6 +196,11 @@ def main() -> None:
     )
 
     parser.add_argument("--resource-group", "-g", default=None)
+    parser.add_argument(
+        "--subscription",
+        default=None,
+        help="Azure subscription ID/name (default: AZURE_SUBSCRIPTION_ID from .env.deploy if set)",
+    )
     parser.add_argument("--container-group", "-n", default=None, help="ACI container group name (default: AZURE_CONTAINER_NAME or camera-storage-viewer)")
     parser.add_argument("--container-name", default=None, help="Container name within the group (default: same as --container-group)")
 
@@ -178,13 +217,28 @@ def main() -> None:
     )
     parser.add_argument(
         "--delete-empty-dirs",
-        action="store_true",
-        help="After deleting files, remove empty directories under --path (best-effort).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="After deleting files, remove empty directories under --path (best-effort). Default: enabled.",
     )
 
     args = parser.parse_args()
 
     _load_env(args.env_file)
+
+    subscription = (
+        args.subscription
+        or os.getenv(VarsEnum.AZURE_SUBSCRIPTION_ID.value)
+        or ""
+    ).strip()
+    if subscription:
+        # Avoid surprising "no resources found" when the user is logged into a different subscription.
+        run_az_command(
+            ["account", "set", "--subscription", subscription],
+            capture_output=False,
+            ignore_errors=False,
+            verbose=True,
+        )
 
     rg = (args.resource_group or os.getenv(VarsEnum.AZURE_RESOURCE_GROUP.value) or "").strip()
     if not rg:
@@ -207,7 +261,7 @@ def main() -> None:
         delete_empty_dirs=bool(args.delete_empty_dirs),
     )
 
-    exec_cmd = f"python -c {shlex.quote(snippet)}"
+    exec_cmd = f"python -c {snippet}"
 
     mode = "APPLY" if args.apply else "DRY-RUN"
     print(f"[cleanup] mode={mode} rg={rg} group={group} container={container} path={target_path}")
@@ -232,7 +286,8 @@ def main() -> None:
             ],
             capture_output=True,
             ignore_errors=False,
-            verbose=True,
+            # The exec command can be long; keep logs readable.
+            verbose=False,
         )
     except subprocess.CalledProcessError as e:
         err = (getattr(e, "stderr", None) or "").strip()
@@ -257,16 +312,27 @@ def main() -> None:
             if isinstance(existing, str):
                 names = [n.strip() for n in existing.splitlines() if n.strip()]
 
+            current_sub = run_az_command(
+                ["account", "show", "--query", "id", "-o", "tsv"],
+                capture_output=True,
+                ignore_errors=True,
+                verbose=False,
+            )
+            current_sub = (str(current_sub or "")).strip()
+
             hint = "\n".join(
                 [
                     "[cleanup] ACI container group not found.",
                     f"[cleanup] Tried: --container-group {group}",
+                    f"[cleanup] Subscription: {current_sub or '<unknown>'}",
                     ("[cleanup] Container groups in this resource group:\n" + "\n".join([f"- {n}" for n in names]))
                     if names
                     else "[cleanup] No container groups found in this resource group.",
                     "",
                     "Try rerunning with the right group name, e.g.:",
                     f"  python scripts/deploy/azure_storage_cleanup.py --resource-group {rg} --container-group <NAME> --all --apply",
+                    "",
+                    "If you expected resources here, double-check the subscription and resource group.",
                 ]
             )
             raise SystemExit(hint)
