@@ -112,15 +112,25 @@ def _run(cmd: list[str], *, input_text: str | None = None) -> str:
 
 
 def _detect_repo() -> str:
-    # Prefer `gh repo view` (handles detached dirs), but fall back to parsing git remote.
+    # Prefer 'origin' remote to avoid defaulting to upstream in forks.
+    try:
+        origin_url = _run(["git", "remote", "get-url", "origin"]).strip()
+        if origin_url:
+            return _run(["gh", "repo", "view", origin_url, "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    except Exception:
+        pass
+
+    # Next try `gh repo view` in the current directory (handles detached dirs).
     try:
         return _run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
     except SystemExit:
         pass
 
+    # Last resort: parse the git remote ourselves.
     repo = _detect_repo_from_git_remote()
     if repo:
         return repo
+
     raise SystemExit(
         "Could not detect GitHub repo for this directory. "
         "Run `gh repo set-default` or pass --repo owner/repo."

@@ -324,6 +324,17 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         default="2.0",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
+    EnvKeySpec(
+        key=VarsEnum.BASIC_AUTH_USER,
+        mandatory=False,
+        default="admin",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.BASIC_AUTH_HASH,
+        mandatory=False,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_SECRET}),
+    ),
     # GitHub Actions expects this secret to exist to materialize `.env` in CI.
     EnvKeySpec(
         key=SecretsEnum.RUNTIME_ENV_DOTENV,

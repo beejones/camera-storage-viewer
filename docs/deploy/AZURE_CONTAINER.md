@@ -111,3 +111,20 @@ Triggers on: **Workflow Dispatch** (Manual)
    - `AZURE_CONTAINER_NAME` (e.g. `camera-storage-viewer`)
 
 The workflow builds/pushes `ghcr.io/<owner>/<repo>:latest` and then runs `scripts/deploy/azure_deploy_container.py`.
+
+### Resetting GitHub Secrets
+
+If you need to clear all secrets and variables (e.g. to fix stale environment overrides or reset completely):
+
+**Option 1: Integrated Flag (Recommended)**
+Runs before syncing new values:
+```bash
+python scripts/deploy/azure_deploy_container.py --nuke-github-secrets
+```
+
+**Option 2: Standalone Script**
+```bash
+python scripts/deploy/gh_nuke_secrets.py
+```
+
+*Note: You will be asked to type `DELETE` to confirm unless you run in non-interactive mode.*

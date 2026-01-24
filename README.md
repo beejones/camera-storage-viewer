@@ -41,15 +41,8 @@ curl -T /tmp/test.txt ftp://$FTP_USERNAME:$FTP_PASSWORD@localhost:21/
 
 If you use `FTP_USERS_JSON`, pick one user/password from that list.
 
-## FTP Networking Notes (Important)
 
-FTP requires:
-- control port `21`
-- a passive range (default in this repo): `50000-50003`
-
-Locally, [docker-compose.yml](docker-compose.yml) publishes these ports.
-In Azure, the ACI container group must expose the same ports.
-
+If you use `FTP_USERS_JSON`, pick one user/password from that list.
 Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).
 
 If PASV uploads fail in Azure, you usually need to set:
