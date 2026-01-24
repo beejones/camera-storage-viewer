@@ -64,6 +64,10 @@ Optional auth:
 - Set `VIEWER_AUTH_TOKEN` in `.env`
 - Send `Authorization: Bearer <token>`
 
+Thumbnails:
+- If a sidecar image exists next to a clip (e.g. `clip1.jpg` next to `clip1.mp4`), the API serves it.
+- Otherwise, the `web` container can generate thumbnails with ffmpeg when `THUMBNAIL_GENERATION=true`.
+
 ### Test Upload (without a camera)
 
 Example using `curl`:

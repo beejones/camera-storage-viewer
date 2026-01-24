@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
+from src.thumbnails import ensure_thumbnail, generated_thumbnail_path, load_thumbnail_config
 from src.viewer_db import (
     default_db_path,
     last_upload_time_for_camera as db_last_upload_time_for_camera,
@@ -66,6 +67,8 @@ def list_clips(
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
     clips = db_list_clips_for_day(out_dir=out_dir, db_path=db_path, camera_id=camera_id, day=day)
+
+    thumb_cfg = load_thumbnail_config()
     return [
         ClipOut(
             clip_id=c.clip_id,
@@ -73,7 +76,11 @@ def list_clips(
             start_time=c.start_time,
             duration_seconds=None,
             size_bytes=c.size_bytes,
-            has_thumbnail=(c.find_thumbnail() is not None),
+            has_thumbnail=(
+                (c.find_thumbnail() is not None)
+                or generated_thumbnail_path(out_dir, c, size="small", cfg=thumb_cfg).exists()
+                or generated_thumbnail_path(out_dir, c, size="large", cfg=thumb_cfg).exists()
+            ),
         )
         for c in clips
     ]
@@ -110,13 +117,17 @@ def get_thumbnail(
     if clip is None:
         raise HTTPException(status_code=404, detail="clip not found")
 
-    thumb = clip.find_thumbnail()
+    thumb = ensure_thumbnail(out_dir, clip, size=size)
     if thumb is None:
         raise HTTPException(status_code=404, detail="thumbnail not found")
 
-    # Size variants are a future enhancement; for now serve the best available.
-    _ = size
-    return FileResponse(path=str(thumb), media_type="image/jpeg")
+    media_type = "image/jpeg"
+    if thumb.suffix.lower() == ".webp":
+        media_type = "image/webp"
+    elif thumb.suffix.lower() == ".png":
+        media_type = "image/png"
+
+    return FileResponse(path=str(thumb), media_type=media_type)
 
 
 @app.get("/media/{clip_id}")
