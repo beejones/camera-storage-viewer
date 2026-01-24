@@ -1,24 +1,4 @@
-# Caddyfile for TLS termination and Basic Auth
-# All authentication is handled here - code-server runs with --auth none
-
-{$PUBLIC_DOMAIN} {
-    tls {$ACME_EMAIL}
-    header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-    
-    # Single Basic Auth layer for all routes
-    basicauth /* {
-        {$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
-    }
-    
-    # Proxy to code-server
-    reverse_proxy app:8080 {
-        # WebSocket support for code-server
-        header_up Upgrade {http.request.header.Upgrade}
-        header_up Connection {http.request.header.Connection}
-    }
-}
-
-# Health check endpoint (no auth required)
-:80 {
-    respond /healthz "OK" 200
-}
+# Deprecated
+#
+# This repository no longer deploys a web proxy sidecar. The current model is an
+# FTP-only container group in Azure Container Instances.

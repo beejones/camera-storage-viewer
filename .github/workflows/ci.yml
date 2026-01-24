@@ -39,10 +39,7 @@ jobs:
     - name: Built app image
       uses: docker/build-push-action@v5
       with:
-        context: docker
+        context: .
+        file: docker/Dockerfile
         push: false
-        tags: protected-azure-container:latest
-    
-    - name: Build Caddy image (check)
-      run: |
-        docker pull caddy:2-alpine
+        tags: camera-storage-viewer:latest

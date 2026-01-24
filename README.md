@@ -1,107 +1,123 @@
-# Protected Azure Container
+# Camera Storage Viewer
 
-A world-class protected container setup featuring:
-- **VS Code in browser** via [code-server](https://github.com/coder/code-server)
-- **TLS termination** with automatic Let's Encrypt certificates via Caddy
-- **Azure Key Vault** integration for secrets management
-- **Azure Managed Identity** for secure authentication
-- **GitHub Actions** CI/CD with OIDC authentication
+This repo is evolving into an Azure-hosted camera recorder + viewer.
 
-## Quick Start (Local Development)
+Prototype (this step): an **FTP server** you can point one or more cameras at (starting with Reolink), so we can validate uploads and networking (PASV, port ranges) end-to-end.
+
+## Quick Start (Local FTP Prototype)
+
+1) Create `.env`:
 
 ```bash
-# Copy example environment files
 cp env.example .env
-cp env.deploy.example .env.deploy
+```
 
-# Generate a Basic Auth password hash
-docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your-password'
+2) Set the required values in `.env`:
+- FTP users (choose one):
+	- single camera: `FTP_USERNAME`, `FTP_PASSWORD`, `FTP_CAMERA_ID`
+	- multi-camera: `FTP_USERS_JSON`
 
-# Add the hash to .env
-echo 'BASIC_AUTH_USER=admin' >> .env
-echo 'BASIC_AUTH_HASH=<paste-hash-here>' >> .env
+3) Start containers:
 
-# Start the containers
+```bash
 docker compose up --build
 ```
 
-Open `https://localhost` (accept the self-signed cert warning for local dev).
+This starts the FTP server container.
 
-## Architecture
+FTP will be available at `localhost:21`.
 
-Two containers in a container group:
+Uploaded files land under:
+- `out/incoming/<camera_id>/...`
 
-| Container | Purpose | Ports |
-|-----------|---------|-------|
-| `protected-azure-container` | code-server (VS Code) | 8080 (internal) |
-| `tls-proxy` (Caddy) | TLS termination + Basic Auth | 80, 443 |
+### Test Upload (without a camera)
 
-```
-Internet → Caddy (443) → [Basic Auth] → code-server (8080)
-```
-
-## Documentation
-
-- [Azure Container Deployment](docs/deploy/AZURE_CONTAINER.md) - Deploy to Azure Container Instances
-- [code-server Setup](docs/CODE_SERVER.md) - Configuration and customization
-- [Env Schema](docs/deploy/ENV_SCHEMA.md) - How to add vars/secrets to the schema
-- [Add Your App](docs/deploy/ADD_YOUR_APP.md) - How to bundle and run your own app in this container
-
-## Use This Repo As A Template
-
-If you want to use this project as a base for a new repo that needs a protected Azure container:
-
-### Option A: GitHub template flow (recommended)
-
-Use GitHub’s “Use this template” button, or use `gh` with the current repo as the template:
+Example using `curl`:
 
 ```bash
-gh repo create <your-org>/<new-repo> --public --template beejones/protected-azure-container
+echo "hello" > /tmp/test.txt
+curl -T /tmp/test.txt ftp://$FTP_USERNAME:$FTP_PASSWORD@localhost:21/
 ```
 
-Note: template-based repos are a snapshot. They do not automatically stay connected to this repo for future updates.
+If you use `FTP_USERS_JSON`, pick one user/password from that list.
 
-### Option B: Clone and re-init git
+## FTP Networking Notes (Important)
+
+FTP requires:
+- control port `21`
+- a passive range (default in this repo): `50000-50003`
+
+Locally, [docker-compose.yml](docker-compose.yml) publishes these ports.
+In Azure, the ACI container group must expose the same ports.
+
+Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).
+Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).
+
+If PASV uploads fail in Azure, you usually need to set:
+- `FTP_PUBLIC_HOST` to your public DNS name or IP (so PASV replies contain a reachable address)
+
+## Azure Storage Cleanup
+
+If you need to delete old uploads stored in Azure (the Azure Files share mounted at `/data` in ACI), use:
+- [scripts/deploy/azure_storage_cleanup.py](scripts/deploy/azure_storage_cleanup.py)
+
+This script runs via `az container exec` and deletes files from the mounted share (persistent), not just from the container filesystem.
+
+Safety:
+- Default is **dry-run** (prints what would be deleted)
+- Add `--apply` to actually delete
+- Empty directory cleanup is enabled by default; use `--no-delete-empty-dirs` to keep empty folders.
+
+Dry-run: list files under `/data/incoming` older than a cutoff:
 
 ```bash
-git clone https://github.com/beejones/protected-azure-container.git my-new-repo
-cd my-new-repo
-
-# Keep a link to the original repo so you can pull updates later
-git remote rename origin upstream
-
-# Point "origin" at your new repo
-git remote add origin git@github.com:<your-org>/<new-repo>.git
-
-# Push your new repo
-git push -u origin main
+python scripts/deploy/azure_storage_cleanup.py \
+	--resource-group camera-storage-viewer-rg \
+	--before-date 2026-01-01
 ```
 
-Later, you can pull changes from this repo with:
+Apply deletion:
 
 ```bash
-git pull upstream main
+python scripts/deploy/azure_storage_cleanup.py \
+	--resource-group camera-storage-viewer-rg \
+	--before-date 2026-01-01 \
+	--apply
 ```
 
-After that, update the deployment settings in `.env.deploy` and runtime settings in `.env`.
+Delete everything under `/data/incoming`:
 
-When you need to add new configuration keys, follow the schema guide: [docs/deploy/ENV_SCHEMA.md](docs/deploy/ENV_SCHEMA.md).
+```bash
+python scripts/deploy/azure_storage_cleanup.py \
+	--resource-group camera-storage-viewer-rg \
+	--all \
+	--apply
+```
 
-## Pre-installed Extensions
+## Multi-Camera Configuration
 
-- **Roo Code** (`rooveterinaryinc.roo-cline`) - AI coding assistant
-- **GitHub Pull Requests** (`GitHub.vscode-pull-request-github`) - PR management
+Recommended: `FTP_USERS_JSON` in `.env` as a JSON list:
 
-## Environment Variables
+```text
+FTP_USERS_JSON=[{"camera_id":"front","username":"front","password":"..."},{"camera_id":"back","username":"back","password":"..."}]
+```
 
-This repo uses a strict, schema-driven set of env keys.
+Each user is jailed to its own folder: `out/incoming/<camera_id>`.
 
-- Runtime config lives in `.env` (and is uploaded to Key Vault as a single secret).
-- Deploy-time config lives in `.env.deploy`.
-- Deployment reads `.env` first, then `.env.deploy` on top (deploy-time overrides).
+## Security Notes (Read This)
 
-See env.example and env.deploy.example for the canonical keys.
-If you need to add a new key, follow: [docs/deploy/ENV_SCHEMA.md](docs/deploy/ENV_SCHEMA.md).
+- Anyone who has valid FTP credentials for a user can read/list/download/delete files **inside that user's FTP home directory**.
+	In other words: the credentials *do* grant access to the uploaded files for that camera/user.
+- With per-camera users (`FTP_USERS_JSON`), a user is restricted to its own folder (they should not be able to browse other cameras’ folders).
+- This prototype is **plain FTP** (no TLS), so usernames/passwords and file contents may be observable on the network path.
+	If you need confidentiality/integrity in transit, use FTPS/SFTP or place the service behind a secure tunnel/VPN.
+
+## Where This Is Going
+
+Next steps are documented in [planning/camera-storage-viewer-plan.md](planning/camera-storage-viewer-plan.md):
+- ingest/index recordings into `out/videos/<camera_id>/...`
+- timeline playback + downloads in a web UI
+- retention policy (e.g. delete recordings older than 30 days)
 
 ## License
 

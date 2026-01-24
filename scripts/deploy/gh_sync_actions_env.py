@@ -112,8 +112,49 @@ def _run(cmd: list[str], *, input_text: str | None = None) -> str:
 
 
 def _detect_repo() -> str:
-    # Uses current repo.
-    return _run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    # Prefer 'origin' remote to avoid defaulting to upstream in forks.
+    try:
+        origin_url = _run(["git", "remote", "get-url", "origin"]).strip()
+        if origin_url:
+            return _run(["gh", "repo", "view", origin_url, "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    except Exception:
+        pass
+
+    # Next try `gh repo view` in the current directory (handles detached dirs).
+    try:
+        return _run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    except SystemExit:
+        pass
+
+    # Last resort: parse the git remote ourselves.
+    repo = _detect_repo_from_git_remote()
+    if repo:
+        return repo
+
+    raise SystemExit(
+        "Could not detect GitHub repo for this directory. "
+        "Run `gh repo set-default` or pass --repo owner/repo."
+    )
+
+
+def _detect_repo_from_git_remote() -> str | None:
+    try:
+        url = _run(["git", "remote", "get-url", "origin"]).strip()
+    except Exception:
+        return None
+
+    # Common forms:
+    # - git@github.com:owner/repo.git
+    # - https://github.com/owner/repo.git
+    # - ssh://git@github.com/owner/repo.git
+    m = re.search(r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$", url)
+    if not m:
+        return None
+    owner = (m.group("owner") or "").strip()
+    repo = (m.group("repo") or "").strip()
+    if not owner or not repo:
+        return None
+    return f"{owner}/{repo}"
 
 
 def _detect_default_branch(repo: str) -> str | None:
@@ -231,14 +272,14 @@ def _set_secret(*, repo: str, name: str, value: str, dry_run: bool) -> None:
 
 def _set_variable(*, repo: str, name: str, value: str, dry_run: bool) -> None:
     if dry_run:
-        print(f"[dry-run] set var {_fmt_kv(name, repr(value))} (repo={repo})")
+        print(f"[dry-run] set var {name} (repo={repo})")
         return
 
     # Prefer `gh variable set` when available.
     if _has_gh_variables():
         try:
             _run(["gh", "variable", "set", name, "-R", repo, "-b", value])
-            print(f"[ok] set var {_fmt_kv(name, repr(value))} (repo={repo})")
+            print(f"[ok] set var {name} (repo={repo})")
             return
         except SystemExit:
             # Fall through to API fallback.
@@ -263,7 +304,7 @@ def _set_variable(*, repo: str, name: str, value: str, dry_run: bool) -> None:
         check=False,
     )
     if p.returncode == 0:
-        print(f"[ok] set var {_fmt_kv(name, repr(value))} (repo={repo})")
+        print(f"[ok] set var {name} (repo={repo})")
         return
 
     err = (p.stderr or "").strip()
@@ -281,7 +322,7 @@ def _set_variable(*, repo: str, name: str, value: str, dry_run: bool) -> None:
                 f"value={value}",
             ]
         )
-        print(f"[ok] set var {_fmt_kv(name, repr(value))} (repo={repo})")
+        print(f"[ok] set var {name} (repo={repo})")
         return
 
     raise SystemExit(f"Command failed ({p.returncode}): gh api (set variable {name})\n{err}")
@@ -454,22 +495,26 @@ def main() -> None:
     if azure_client_id:
         _set_variable(repo=repo, name=VarsEnum.AZURE_CLIENT_ID.value, value=azure_client_id, dry_run=dry_run)
         if args.ensure_federated_credential and not dry_run:
-            explicit_subject = (args.oidc_subject or "").strip()
-            subjects: set[str] = set()
-            if explicit_subject:
-                subjects.add(explicit_subject)
-            else:
-                default_branch = _detect_default_branch(repo) or "main"
-                subjects.add(f"repo:{repo}:ref:refs/heads/{default_branch}")
-                # Also authorize the 'production' environment for GitHub Actions deployment jobs
-                subjects.add(f"repo:{repo}:environment:production")
-                
-                current_branch = _detect_current_branch()
-                if current_branch and current_branch != default_branch:
-                    subjects.add(f"repo:{repo}:ref:refs/heads/{current_branch}")
+            try:
+                explicit_subject = (args.oidc_subject or "").strip()
+                subjects: set[str] = set()
+                if explicit_subject:
+                    subjects.add(explicit_subject)
+                else:
+                    default_branch = _detect_default_branch(repo) or "main"
+                    subjects.add(f"repo:{repo}:ref:refs/heads/{default_branch}")
+                    # Also authorize the 'production' environment for GitHub Actions deployment jobs
+                    subjects.add(f"repo:{repo}:environment:production")
 
-            for subject in sorted(subjects):
-                _ensure_federated_credential(app_id=azure_client_id, repo=repo, subject=subject)
+                    current_branch = _detect_current_branch()
+                    if current_branch and current_branch != default_branch:
+                        subjects.add(f"repo:{repo}:ref:refs/heads/{current_branch}")
+
+                for subject in sorted(subjects):
+                    _ensure_federated_credential(app_id=azure_client_id, repo=repo, subject=subject)
+            except Exception as e:
+                # Do not block syncing Actions vars/secrets when Azure CLI isn't available/logged in.
+                print(f"[warn] Could not ensure Azure federated credential via az CLI: {e}", file=sys.stderr)
     if azure_tenant_id:
         _set_variable(repo=repo, name=VarsEnum.AZURE_TENANT_ID.value, value=azure_tenant_id, dry_run=dry_run)
     if azure_subscription_id:

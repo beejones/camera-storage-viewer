@@ -1,54 +1,38 @@
 services:
-  # Main application container with code-server
-  app:
+  # FTP-only container
+  ftp:
     build:
-      context: ./docker
-      dockerfile: Dockerfile
-    container_name: protected-azure-container
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: camera-storage-viewer-ftp
     restart: unless-stopped
     environment:
-      # code-server runs on this port (internal)
-      CODE_SERVER_PORT: 8080
+      # FTP server (camera uploads)
+      OUT_DIR: /data
+      FTP_BIND_HOST: 0.0.0.0
+      FTP_PORT: 21
+      FTP_PASSIVE_PORT_MIN: 50000
+      FTP_PASSIVE_PORT_MAX: 50003
+      FTP_PUBLIC_HOST: ${FTP_PUBLIC_HOST:-}
+      FTP_CAMERA_ID: ${FTP_CAMERA_ID:-camera1}
+      FTP_USERNAME: ${FTP_USERNAME:-}
+      FTP_PASSWORD: ${FTP_PASSWORD:-}
+      FTP_USERS_JSON: ${FTP_USERS_JSON:-}
+      # Local dev convenience: if no FTP creds are provided, start with camera1/camera1
+      FTP_DEV_DEFAULTS: ${FTP_DEV_DEFAULTS:-true}
       # Key Vault URI - set in .env or override at deploy time
       AZURE_KEYVAULT_URI: ${AZURE_KEYVAULT_URI:-}
     volumes:
-      # Workspace persistence
-      - ./workspace:/home/coder/workspace
+      # Durable output (mimics Azure Files mount)
+      - ./out:/data
       # Local .env for development (production uses Key Vault)
-      - ./.env:/home/coder/.env:ro
-    expose:
-      - "8080"
-    networks:
-      - internal
-
-  # Caddy TLS proxy sidecar
-  caddy:
-    image: caddy:2-alpine
-    container_name: tls-proxy
-    restart: unless-stopped
+      - ./.env:/app/.env:ro
     ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      # Domain for TLS certificate
-      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
-      ACME_EMAIL: ${ACME_EMAIL:-}
-      # Basic Auth credentials (generate hash with: docker run --rm caddy:2-alpine caddy hash-password --plaintext 'yourPassword')
-      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-admin}
-      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:-}
-    volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - app
+      - "21:21"
+      - "50000-50003:50000-50003"
     networks:
       - internal
 
 networks:
   internal:
     driver: bridge
-
-volumes:
-  caddy_data:
-  caddy_config:

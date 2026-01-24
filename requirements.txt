@@ -6,8 +6,11 @@ requests==2.32.5
 # Development dependencies
 python-dotenv==1.2.1
 
-# For generating Caddy-compatible bcrypt hashes for Basic Auth
+# Optional helper dependency for bcrypt hashing utilities
 bcrypt>=4.2.0
+
+# FTP server (camera uploads)
+pyftpdlib>=2.0.0
 
 # Azure ACI deployment helpers
 azure-identity>=1.17.0

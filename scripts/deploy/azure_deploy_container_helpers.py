@@ -229,23 +229,32 @@ def ensure_key_vault(*, name: str, resource_group: str, location: str) -> dict:
                 return existing
             time.sleep(2)
 
-    created = run_az_command(
-        [
-            "keyvault",
-            "create",
-            "--name",
-            name,
-            "--resource-group",
-            resource_group,
-            "--location",
-            location,
-            "--enable-rbac-authorization",
-            "true",
-            "--output",
-            "json",
-        ],
-        capture_output=True,
-    )
+    try:
+        created = run_az_command(
+            [
+                "keyvault",
+                "create",
+                "--name",
+                name,
+                "--resource-group",
+                resource_group,
+                "--location",
+                location,
+                "--enable-rbac-authorization",
+                "true",
+                "--output",
+                "json",
+            ],
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        err = (getattr(e, "stderr", "") or "").strip()
+        if "already exists" in err.lower():
+            raise SystemExit(
+                "Key Vault name is already taken (Key Vault names are globally unique). "
+                f"Choose a different name via --keyvault-name (current: {name})."
+            )
+        raise
     if not isinstance(created, dict):
         raise RuntimeError("Failed to create Key Vault (unexpected az output)")
     return created

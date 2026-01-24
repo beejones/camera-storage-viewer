@@ -62,6 +62,21 @@ class VarsEnum(str, Enum):
     # Runtime
     BASIC_AUTH_USER = "BASIC_AUTH_USER"
 
+    # Runtime (camera FTP)
+    OUT_DIR = "OUT_DIR"
+    FTP_BIND_HOST = "FTP_BIND_HOST"
+    FTP_PORT = "FTP_PORT"
+    FTP_PUBLIC_HOST = "FTP_PUBLIC_HOST"
+    FTP_PASSIVE_PORT_MIN = "FTP_PASSIVE_PORT_MIN"
+    FTP_PASSIVE_PORT_MAX = "FTP_PASSIVE_PORT_MAX"
+    FTP_PERMIT_FOREIGN_ADDRESSES = "FTP_PERMIT_FOREIGN_ADDRESSES"
+    FTP_INCOMING_DIR = "FTP_INCOMING_DIR"
+    FTP_SPOOL_DIR = "FTP_SPOOL_DIR"
+    FTP_USERNAME = "FTP_USERNAME"
+    FTP_CAMERA_ID = "FTP_CAMERA_ID"
+    FTP_DEV_DEFAULTS = "FTP_DEV_DEFAULTS"
+    RETENTION_DAYS = "RETENTION_DAYS"
+
 
 class SecretsEnum(str, Enum):
     # Image / registry
@@ -69,6 +84,10 @@ class SecretsEnum(str, Enum):
 
     # Runtime
     BASIC_AUTH_HASH = "BASIC_AUTH_HASH"
+
+    # Runtime (camera FTP)
+    FTP_PASSWORD = "FTP_PASSWORD"
+    FTP_USERS_JSON = "FTP_USERS_JSON"
 
     # App/runtime secret (optional; user-defined)
     APP_SECRET = "APP_SECRET"
@@ -108,13 +127,105 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
     ),
     EnvKeySpec(
         key=SecretsEnum.BASIC_AUTH_HASH,
-        mandatory=True,
+        mandatory=False,
         targets=frozenset({EnvTarget.DOTENV_RUNTIME, EnvTarget.GH_ACTIONS_SECRET}),
     ),
     EnvKeySpec(
         key=SecretsEnum.APP_SECRET,
         mandatory=False,
         default=None,
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+
+    # Camera FTP runtime configuration
+    EnvKeySpec(
+        key=VarsEnum.OUT_DIR,
+        mandatory=False,
+        default="/data",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_BIND_HOST,
+        mandatory=False,
+        default="0.0.0.0",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_PORT,
+        mandatory=False,
+        default="21",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_PUBLIC_HOST,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_PASSIVE_PORT_MIN,
+        mandatory=False,
+        default="50000",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_PASSIVE_PORT_MAX,
+        mandatory=False,
+        default="50003",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_PERMIT_FOREIGN_ADDRESSES,
+        mandatory=False,
+        default="true",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_INCOMING_DIR,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_SPOOL_DIR,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_USERNAME,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.FTP_PASSWORD,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_CAMERA_ID,
+        mandatory=False,
+        default="camera1",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_DEV_DEFAULTS,
+        mandatory=False,
+        default="false",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.FTP_USERS_JSON,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.RETENTION_DAYS,
+        mandatory=False,
+        default="30",
         targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
     ),
 )
@@ -145,7 +256,7 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
     EnvKeySpec(
         key=VarsEnum.AZURE_RESOURCE_GROUP,
         mandatory=False,
-        default="protected-azure-container-rg",
+        default="camera-storage-viewer-rg",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(
@@ -157,7 +268,7 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
     EnvKeySpec(
         key=VarsEnum.AZURE_CONTAINER_NAME,
         mandatory=False,
-        default="protected-azure-container",
+        default="camera-storage-viewer",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(
@@ -168,12 +279,14 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
     ),
     EnvKeySpec(
         key=VarsEnum.PUBLIC_DOMAIN,
-        mandatory=True,
+        mandatory=False,
+        default=None,
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(
         key=VarsEnum.ACME_EMAIL,
-        mandatory=True,
+        mandatory=False,
+        default=None,
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(
@@ -210,6 +323,17 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         mandatory=False,
         default="2.0",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.BASIC_AUTH_USER,
+        mandatory=False,
+        default="admin",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.BASIC_AUTH_HASH,
+        mandatory=False,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_SECRET}),
     ),
     # GitHub Actions expects this secret to exist to materialize `.env` in CI.
     EnvKeySpec(
