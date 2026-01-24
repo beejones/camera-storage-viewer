@@ -8,11 +8,12 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
-from src.viewer_index import (
-    iter_camera_ids,
-    last_upload_time_for_camera,
-    list_clips_for_day,
-    resolve_clip_by_id,
+from src.viewer_db import (
+    default_db_path,
+    last_upload_time_for_camera as db_last_upload_time_for_camera,
+    list_cameras as db_list_cameras,
+    list_clips_for_day as db_list_clips_for_day,
+    resolve_clip_by_id as db_resolve_clip_by_id,
 )
 from src.web_models import CameraOut, ClipDetailOut, ClipOut
 
@@ -43,14 +44,14 @@ def healthz() -> dict[str, str]:
 @app.get("/api/cameras", response_model=list[CameraOut])
 def list_cameras(_: AuthDep) -> list[CameraOut]:
     out_dir = _out_dir()
-    incoming_root = out_dir / "incoming"
+    db_path = default_db_path(out_dir)
     cameras: list[CameraOut] = []
-    for camera_id in iter_camera_ids(incoming_root):
+    for camera_id in db_list_cameras(out_dir=out_dir, db_path=db_path):
         cameras.append(
             CameraOut(
                 camera_id=camera_id,
                 display_name=camera_id,
-                last_upload_at=last_upload_time_for_camera(out_dir=out_dir, camera_id=camera_id),
+                last_upload_at=db_last_upload_time_for_camera(out_dir=out_dir, db_path=db_path, camera_id=camera_id),
             )
         )
     return cameras
@@ -63,7 +64,8 @@ def list_clips(
     day: Annotated[date, Query(alias="date")],
 ) -> list[ClipOut]:
     out_dir = _out_dir()
-    clips = list_clips_for_day(out_dir=out_dir, camera_id=camera_id, day=day)
+    db_path = default_db_path(out_dir)
+    clips = db_list_clips_for_day(out_dir=out_dir, db_path=db_path, camera_id=camera_id, day=day)
     return [
         ClipOut(
             clip_id=c.clip_id,
@@ -80,7 +82,8 @@ def list_clips(
 @app.get("/api/clips/{clip_id}", response_model=ClipDetailOut)
 def get_clip(clip_id: str, _: AuthDep) -> ClipDetailOut:
     out_dir = _out_dir()
-    clip = resolve_clip_by_id(out_dir=out_dir, clip_id=clip_id)
+    db_path = default_db_path(out_dir)
+    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
     if clip is None:
         raise HTTPException(status_code=404, detail="clip not found")
 
@@ -102,7 +105,8 @@ def get_thumbnail(
     size: Annotated[str, Query(pattern="^(small|large)$")] = "small",
 ) -> FileResponse:
     out_dir = _out_dir()
-    clip = resolve_clip_by_id(out_dir=out_dir, clip_id=clip_id)
+    db_path = default_db_path(out_dir)
+    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
     if clip is None:
         raise HTTPException(status_code=404, detail="clip not found")
 
@@ -118,11 +122,12 @@ def get_thumbnail(
 @app.get("/media/{clip_id}")
 def stream_media(clip_id: str, _: AuthDep) -> FileResponse:
     out_dir = _out_dir()
-    clip = resolve_clip_by_id(out_dir=out_dir, clip_id=clip_id)
+    db_path = default_db_path(out_dir)
+    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
     if clip is None:
         raise HTTPException(status_code=404, detail="clip not found")
 
-    return FileResponse(path=str(clip.path), media_type="video/mp4")
+    return FileResponse(path=str(clip.abs_path), media_type="video/mp4")
 
 
 if __name__ == "__main__":

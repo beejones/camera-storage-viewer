@@ -37,3 +37,24 @@ def test_api_contract_smoke(tmp_path: Path, monkeypatch) -> None:
     media_resp = client.get(f"/media/{clip_id}")
     assert media_resp.status_code == 200
     assert media_resp.headers["content-type"].startswith("video/")
+
+
+def test_clip_id_resolves_via_sqlite_index(tmp_path: Path, monkeypatch) -> None:
+    out_dir = tmp_path / "out"
+    (out_dir / "incoming" / "front").mkdir(parents=True)
+
+    clip_path = out_dir / "incoming" / "front" / "clip1.mp4"
+    clip_path.write_bytes(b"\x00\x00\x00\x18ftypmp42dummy")
+
+    monkeypatch.setenv("OUT_DIR", str(out_dir))
+
+    client = TestClient(app)
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    clips = client.get(f"/api/cameras/front/clips?date={today}").json()
+    assert len(clips) == 1
+    clip_id = clips[0]["clip_id"]
+
+    # Ensure it resolves without relying on brute-force scanning.
+    detail = client.get(f"/api/clips/{clip_id}").json()
+    assert detail["clip_id"] == clip_id
