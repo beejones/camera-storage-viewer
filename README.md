@@ -41,12 +41,57 @@ curl -T /tmp/test.txt ftp://$FTP_USERNAME:$FTP_PASSWORD@localhost:21/
 
 If you use `FTP_USERS_JSON`, pick one user/password from that list.
 
+## FTP Networking Notes (Important)
 
-If you use `FTP_USERS_JSON`, pick one user/password from that list.
+FTP requires:
+- control port `21`
+- a passive range (default in this repo): `50000-50003`
+
+Locally, [docker-compose.yml](docker-compose.yml) publishes these ports.
+In Azure, the ACI container group must expose the same ports.
+
+Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).
 Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).
 
 If PASV uploads fail in Azure, you usually need to set:
 - `FTP_PUBLIC_HOST` to your public DNS name or IP (so PASV replies contain a reachable address)
+
+## Azure Storage Cleanup
+
+If you need to delete old uploads stored in Azure (the Azure Files share mounted at `/data` in ACI), use:
+- [scripts/deploy/azure_storage_cleanup.py](scripts/deploy/azure_storage_cleanup.py)
+
+This script runs via `az container exec` and deletes files from the mounted share (persistent), not just from the container filesystem.
+
+Safety:
+- Default is **dry-run** (prints what would be deleted)
+- Add `--apply` to actually delete
+
+Dry-run: list files under `/data/incoming` older than a cutoff:
+
+```bash
+python scripts/deploy/azure_storage_cleanup.py \
+	--resource-group camera-storage-viewer-rg \
+	--before-date 2026-01-01
+```
+
+Apply deletion:
+
+```bash
+python scripts/deploy/azure_storage_cleanup.py \
+	--resource-group camera-storage-viewer-rg \
+	--before-date 2026-01-01 \
+	--apply
+```
+
+Delete everything under `/data/incoming`:
+
+```bash
+python scripts/deploy/azure_storage_cleanup.py \
+	--resource-group camera-storage-viewer-rg \
+	--all \
+	--apply
+```
 
 ## Multi-Camera Configuration
 
