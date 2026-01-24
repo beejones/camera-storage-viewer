@@ -36,16 +36,13 @@ jobs:
         username: ${{ vars.GHCR_USERNAME || 'beejones' }}
         password: ${{ secrets.GHCR_TOKEN }}
 
-    - name: Check and mirror Caddy + code-server
+    - name: Check and mirror Caddy
       shell: bash
       env:
         CADDY_UPSTREAM: caddy:2-alpine
         # Keep existing tag used elsewhere, plus also publish :latest and :v<version>-alpine
         CADDY_MIRROR_TRACKING: ghcr.io/beejones/caddy:2-alpine
         CADDY_MIRROR_REPO: ghcr.io/beejones/caddy
-        CODE_SERVER_UPSTREAM: codercom/code-server:latest
-        # Publish :latest and :v<version>
-        CODE_SERVER_MIRROR_REPO: ghcr.io/beejones/code-server
       run: |
         set -euo pipefail
 
@@ -64,20 +61,6 @@ jobs:
             return 0
           fi
           echo "v${v}-alpine"
-        }
-
-        code_server_version_tag() {
-          # Returns vX.Y.Z
-          local v
-          v=$(docker run --rm --entrypoint code-server "$CODE_SERVER_UPSTREAM" --version 2>/dev/null | head -n 1 | tr -d '\r')
-          # Extract a safe semver from potentially decorated output like:
-          #   4.96.2 [2026-01-24T09:11:04.875Z]
-          v=$(echo "$v" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
-          if [ -z "$v" ]; then
-            echo ""
-            return 0
-          fi
-          echo "v${v}"
         }
 
         mirror_if_changed() {
@@ -146,12 +129,6 @@ jobs:
         fi
         mirror_if_changed "$CADDY_UPSTREAM" "$CADDY_MIRROR_TRACKING" "$CADDY_MIRROR_REPO" "$caddy_vtag"
 
-        cs_vtag=$(code_server_version_tag)
-        if [ -z "$cs_vtag" ]; then
-          echo "::warning::Could not detect code-server version tag; will only push latest"
-        fi
-        mirror_if_changed "$CODE_SERVER_UPSTREAM" "" "$CODE_SERVER_MIRROR_REPO" "$cs_vtag"
-
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
@@ -197,9 +174,8 @@ jobs:
       env:
         IMAGE: ghcr.io/${{ github.repository }}:latest
         CADDY_MIRROR: ghcr.io/${{ github.repository }}/caddy:2-alpine
-        CODE_SERVER_MIRROR: ghcr.io/${{ github.repository }}/code-server:latest
       run: |
-        docker build -t $IMAGE ./docker
+        docker build -t $IMAGE -f docker/Dockerfile .
         docker push $IMAGE
         
         # Mirror Caddy to GHCR to avoid Docker Hub rate limits/ACE conflicts
@@ -215,21 +191,6 @@ jobs:
           docker push $CADDY_VERSION_MIRROR
         else
           echo "::warning::Could not detect Caddy version; skipping version tag"
-        fi
-
-        # Mirror code-server to GHCR to avoid Docker Hub rate limits/ACE conflicts
-        docker pull codercom/code-server:latest
-        docker tag codercom/code-server:latest $CODE_SERVER_MIRROR
-        docker push $CODE_SERVER_MIRROR
-
-        cs_version=$(docker run --rm --entrypoint code-server codercom/code-server:latest --version 2>/dev/null | head -n 1 | tr -d '\r')
-        cs_vtag=$(echo "$cs_version" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
-        if [ -n "$cs_vtag" ]; then
-          CODE_SERVER_VERSION_MIRROR=ghcr.io/${{ github.repository }}/code-server:v${cs_vtag}
-          docker tag codercom/code-server:latest $CODE_SERVER_VERSION_MIRROR
-          docker push $CODE_SERVER_VERSION_MIRROR
-        else
-          echo "::warning::Could not detect code-server version; skipping version tag"
         fi
 
     - name: Create .env.deploy from vars/secrets

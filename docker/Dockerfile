@@ -1,63 +1,28 @@
-# code-server base container
-# Provides VS Code in browser with Azure Key Vault integration
+FROM python:3.12-slim
 
-FROM codercom/code-server:latest
+WORKDIR /app
 
-USER root
-
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    gnupg \
+# Runtime dependencies for Key Vault MI fetch and debugging
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    supervisor \
-    python3 \
-    python3-pip \
-    python3-venv \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+  && rm -rf /var/lib/apt/lists/*
 
-# Install Azure CLI for Key Vault access
-RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+# Install only runtime Python deps (FTP server + dotenv)
+COPY requirements.runtime.txt /tmp/requirements.runtime.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.runtime.txt
 
-# Install Python dependencies (deploy scripts + app)
-COPY requirements.txt /tmp/requirements.txt
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
-
-# Create workspace directory
-RUN mkdir -p /home/coder/workspace && chown -R coder:coder /home/coder/workspace
-
-# Copy repository code into the workspace (overridden by bind-mount in local dev)
-COPY . /home/coder/workspace
-RUN chown -R coder:coder /home/coder/workspace
-
-# Also copy the app code into a non-mounted path so it remains available in ACI,
-# where /home/coder/workspace is typically an Azure Files mount.
-RUN mkdir -p /opt/app
-COPY . /opt/app
-RUN chown -R coder:coder /opt/app
-
-# Copy supervisor config
-COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-
-# Install VS Code extensions
-USER coder
-RUN code-server --install-extension rooveterinaryinc.roo-cline \
-    && code-server --install-extension GitHub.vscode-pull-request-github
-
-USER root
-
-# Copy startup script
+# Copy only what we need to run
+COPY src /app/src
 COPY docker/azure_start.sh /usr/local/bin/azure_start.sh
 RUN chmod +x /usr/local/bin/azure_start.sh
 
-EXPOSE 8080
+ENV PYTHONPATH=/app \
+    OUT_DIR=/data \
+    RUNTIME_ENV_PATH=/app/.env
 
-# Environment defaults
-ENV CODE_SERVER_PORT=8080 \
-    WORKSPACE_DIR=/home/coder/workspace
+# FTP control + passive ports (range is configured via env, but image exposes defaults)
+EXPOSE 21 50000-50100
 
-# Entrypoint fetches secrets from Key Vault, then starts supervisor
 ENTRYPOINT ["/usr/local/bin/azure_start.sh"]
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+CMD ["python", "-m", "src.ftp_server"]

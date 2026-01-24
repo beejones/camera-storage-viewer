@@ -140,7 +140,7 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
     EnvKeySpec(
         key=VarsEnum.OUT_DIR,
         mandatory=False,
-        default="/home/coder/out",
+        default="/data",
         targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
     ),
     EnvKeySpec(

@@ -100,17 +100,23 @@ def _parse_users_json(raw: str) -> list[FtpUser]:
 
 def load_ftp_config(env: Mapping[str, str] | None = None) -> FtpConfig:
     if env is None:
-        # In the container we mount /home/coder/.env (or materialize it from Key Vault).
-        # Reading dotenv directly avoids relying on shell-style exporting, which can mangle
-        # JSON values (e.g. FTP_USERS_JSON) and makes local docker-compose usage simpler.
-        env_path = Path("/home/coder/.env")
+        # Read dotenv directly (avoids shell exporting which can mangle JSON like FTP_USERS_JSON).
+        # Prefer a configurable env path; fall back to historic locations.
+        env_path_candidates = [
+            Path(str(os.getenv("RUNTIME_ENV_PATH", "")).strip()).expanduser() if os.getenv("RUNTIME_ENV_PATH") else None,
+            Path("/app/.env"),
+        ]
         file_kv: dict[str, str] = {}
-        if env_path.exists():
-            raw = dotenv_values(env_path)
-            for k, v in raw.items():
-                if not k:
-                    continue
-                file_kv[str(k)] = "" if v is None else str(v)
+        for candidate in env_path_candidates:
+            if not candidate:
+                continue
+            if candidate.exists():
+                raw = dotenv_values(candidate)
+                for k, v in raw.items():
+                    if not k:
+                        continue
+                    file_kv[str(k)] = "" if v is None else str(v)
+                break
 
         merged = dict(file_kv)
         merged.update(os.environ)
@@ -130,7 +136,7 @@ def load_ftp_config(env: Mapping[str, str] | None = None) -> FtpConfig:
     if passive_port_max < passive_port_min:
         raise ValueError("FTP_PASSIVE_PORT_MAX must be >= FTP_PASSIVE_PORT_MIN")
 
-    out_dir = Path(str(env.get("OUT_DIR", "/home/coder/out")).strip() or "/home/coder/out")
+    out_dir = Path(str(env.get("OUT_DIR", "/data")).strip() or "/data")
     incoming_dir = Path(str(env.get("FTP_INCOMING_DIR", out_dir / "incoming"))).expanduser()
     spool_dir = Path(str(env.get("FTP_SPOOL_DIR", out_dir / "spool"))).expanduser()
 

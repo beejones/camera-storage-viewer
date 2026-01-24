@@ -135,7 +135,7 @@ def generate_deploy_yaml(
     lines += [
         indent(8, "volumeMounts:"),
         indent(10, "- name: workspace-volume"),
-        indent(12, "mountPath: /home/coder/workspace"),
+        indent(12, "mountPath: /data"),
         "",
         indent(4, "- name: tls-proxy"),
         indent(6, "properties:"),

@@ -1,16 +1,14 @@
 services:
-  # Main application container with code-server
-  app:
+  # FTP-only container
+  ftp:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: camera-storage-viewer
+    container_name: camera-storage-viewer-ftp
     restart: unless-stopped
     environment:
-      # code-server runs on this port (internal)
-      CODE_SERVER_PORT: 8080
       # FTP server (camera uploads)
-      OUT_DIR: /home/coder/out
+      OUT_DIR: /data
       FTP_BIND_HOST: 0.0.0.0
       FTP_PORT: 21
       FTP_PASSIVE_PORT_MIN: 50000
@@ -25,14 +23,10 @@ services:
       # Key Vault URI - set in .env or override at deploy time
       AZURE_KEYVAULT_URI: ${AZURE_KEYVAULT_URI:-}
     volumes:
-      # Mount repo as the workspace for local dev
-      - ./:/home/coder/workspace
       # Durable output (mimics Azure Files mount)
-      - ./out:/home/coder/out
+      - ./out:/data
       # Local .env for development (production uses Key Vault)
-      - ./.env:/home/coder/.env:ro
-    expose:
-      - "8080"
+      - ./.env:/app/.env:ro
     ports:
       - "21:21"
       - "50000-50100:50000-50100"
@@ -61,7 +55,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - app
+      - ftp
     networks:
       - internal
 
