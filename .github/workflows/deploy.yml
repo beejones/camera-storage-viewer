@@ -40,12 +40,27 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Check required Azure auth settings
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        client_id="${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}"
+        tenant_id="${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}"
+        subscription_id="${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}"
+
+        if [ -z "$client_id" ] || [ -z "$tenant_id" ] || [ -z "$subscription_id" ]; then
+          echo "::error::Missing Azure auth settings for azure/login@v2.";
+          echo "::error::Set AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID as GitHub repo/environment variables (preferred) or as secrets.";
+          exit 1
+        fi
+
     - name: Azure Login
       uses: azure/login@v2
       with:
-        client-id: ${{ vars.AZURE_CLIENT_ID }}
-        tenant-id: ${{ vars.AZURE_TENANT_ID }}
-        subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        client-id: ${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
 
     - name: Docker Login
       uses: docker/login-action@v3
@@ -89,9 +104,9 @@ jobs:
         fi
 
         {
-          echo "AZURE_CLIENT_ID=${{ vars.AZURE_CLIENT_ID }}"
-          echo "AZURE_TENANT_ID=${{ vars.AZURE_TENANT_ID }}"
-          echo "AZURE_SUBSCRIPTION_ID=${{ vars.AZURE_SUBSCRIPTION_ID }}"
+          echo "AZURE_CLIENT_ID=${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}"
+          echo "AZURE_TENANT_ID=${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}"
+          echo "AZURE_SUBSCRIPTION_ID=${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}"
           echo "AZURE_OIDC_APP_NAME=${{ vars.AZURE_OIDC_APP_NAME }}"
           echo ""
           echo "AZURE_RESOURCE_GROUP=${{ vars.AZURE_RESOURCE_GROUP || 'camera-storage-viewer-rg' }}"
