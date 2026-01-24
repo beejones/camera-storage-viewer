@@ -13,7 +13,6 @@ cp env.example .env
 ```
 
 2) Set the required values in `.env`:
-- `BASIC_AUTH_HASH` (for the Caddy-protected web endpoint)
 - FTP users (choose one):
 	- single camera: `FTP_USERNAME`, `FTP_PASSWORD`, `FTP_CAMERA_ID`
 	- multi-camera: `FTP_USERS_JSON`
@@ -24,13 +23,7 @@ cp env.example .env
 docker compose up --build
 ```
 
-This starts the app container (FTP server + internal services). The TLS proxy is disabled by default for the prototype.
-
-To also start the Caddy TLS proxy (requires `BASIC_AUTH_HASH` in `.env`):
-
-```bash
-docker compose --profile web up --build
-```
+This starts the FTP server container.
 
 FTP will be available at `localhost:21`.
 

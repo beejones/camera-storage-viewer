@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
 """Deploy camera-storage-viewer to Azure Container Instances (ACI).
 
-Model:
-- Multi-container group:
-  - camera-storage-viewer app (code-server)
-  - Caddy TLS proxy (HTTPS + reverse proxy; Basic Auth)
-- Secrets:
-  - Full .env is stored as a Key Vault secret (default: 'env')
-  - App container fetches env at startup via Managed Identity
-  - Basic Auth is configured via ACI secure env vars (recommended)
-
-Notes:
-- Exposes only 80/443 publicly. code-server is behind Caddy at https://<domain>/
-- All access is protected by Basic Auth
+Current model (FTP-only):
+- Single container group with an FTP server.
+- Runtime .env is stored as a Key Vault secret (default: 'env') and fetched at startup via Managed Identity.
+- A single Azure Files share is mounted at /data for durable storage.
 """
 
 from __future__ import annotations
@@ -116,16 +108,12 @@ def generate_deploy_yaml(
     storage_key: str,
     kv_name: str,
     dns_label: str,
-    public_domain: str,
-    acme_email: str,
-    basic_auth_user: str,
-    basic_auth_hash: str,
     cpu_cores: float,
     memory_gb: float,
-    share_workspace: str,
-    caddy_data_share_name: str,
-    caddy_config_share_name: str,
-    caddy_image: str,
+    data_share_name: str,
+    ftp_port: int = 21,
+    ftp_passive_port_min: int = 50000,
+    ftp_passive_port_max: int = 50100,
 ) -> str:
     """Back-compat re-export for tests and external callers."""
 
@@ -143,16 +131,12 @@ def generate_deploy_yaml(
         storage_key=storage_key,
         kv_name=kv_name,
         dns_label=dns_label,
-        public_domain=public_domain,
-        acme_email=acme_email,
-        basic_auth_user=basic_auth_user,
-        basic_auth_hash=basic_auth_hash,
         cpu_cores=cpu_cores,
         memory_gb=memory_gb,
-        share_workspace=share_workspace,
-        caddy_data_share_name=caddy_data_share_name,
-        caddy_config_share_name=caddy_config_share_name,
-        caddy_image=caddy_image,
+        data_share_name=data_share_name,
+        ftp_port=ftp_port,
+        ftp_passive_port_min=ftp_passive_port_min,
+        ftp_passive_port_max=ftp_passive_port_max,
     )
 
 
@@ -171,30 +155,13 @@ def main() -> None:
     parser.add_argument("--identity-name", default=None)
     parser.add_argument("--keyvault-name", default=None)
 
-    parser.add_argument("--share-workspace", default=None)
-    parser.add_argument("--caddy-data-share-name", default=None)
-    parser.add_argument("--caddy-config-share-name", default=None)
-
-    parser.add_argument("--public-domain", default=None)
-    parser.add_argument("--acme-email", default=None)
-
-    parser.add_argument("--basic-auth-user", default=None)
     parser.add_argument(
-        "--basic-auth-hash",
+        "--data-share-name",
         default=None,
-        help="Basic Auth bcrypt hash. If you pass a plain password instead, the script will compute the bcrypt hash automatically.",
+        help="Azure Files share name to mount at /data (default: <container>-data)",
     )
-    parser.add_argument(
-        "--basic-auth-password",
-        default=None,
-        help="Basic Auth password (used to compute bcrypt hash if --basic-auth-hash not provided)",
-    )
-    parser.add_argument(
-        "--bcrypt-cost",
-        type=int,
-        default=14,
-        help="bcrypt cost for generated hash (default: 14)",
-    )
+    # Back-compat alias from the older code-server-based deploy model.
+    parser.add_argument("--share-workspace", dest="data_share_name", default=None, help=argparse.SUPPRESS)
 
     parser.add_argument(
         "--build",
@@ -237,10 +204,6 @@ def main() -> None:
         help="Offer to save entered deploy-time values to Key Vault secrets (default: off)",
     )
 
-    parser.add_argument("--public-domain-secret", default="public-domain")
-    parser.add_argument("--acme-email-secret", default="acme-email")
-    parser.add_argument("--basic-auth-user-secret", default="basic-auth-user")
-    parser.add_argument("--basic-auth-hash-secret", default="basic-auth-hash")
     parser.add_argument("--image-secret", default="image")
     parser.add_argument(
         "--env-file",
@@ -305,20 +268,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--upload-env-prefixes",
-        default="BASIC_AUTH_",
-        help="Comma-separated prefixes to include when uploading env (default: BASIC_AUTH_)",
+        default="FTP_,OUT_DIR,RETENTION_",
+        help="Comma-separated prefixes to include when uploading env (default: FTP_,OUT_DIR,RETENTION_)",
     )
     parser.add_argument(
         "--upload-env-raw",
         action="store_true",
         help="Upload the full env file content (DANGER: may include deploy-only secrets)",
-    )
-
-    parser.add_argument(
-        "--prefetch-images",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Pre-pull Caddy image locally to validate it exists (default: enabled)",
     )
 
     parser.add_argument(
@@ -333,10 +289,6 @@ def main() -> None:
         default=None,
         help=f"Memory GB (default: {VarsEnum.DEFAULT_MEMORY_GB.value} from .env.deploy, fallback {DEFAULT_MEMORY_GB})",
     )
-
-    # Prefer a stable mirror to avoid Docker Hub rate limiting in ACI.
-    # Note: ghcr.io/caddyserver/caddy does not publish a '2-alpine' tag; we use a mirror.
-    parser.add_argument("--caddy-image", default="caddy:2-alpine")
 
     args = parser.parse_args()
 
@@ -475,11 +427,8 @@ def main() -> None:
         kv_name = f"{base}kv"[:24]
 
     # Ensure Azure resources exist so a single azure_deploy_container invocation can bootstrap infra.
-    shares_to_ensure = [
-        args.share_workspace or f"{name}-workspace",
-        args.caddy_data_share_name or f"{name}-caddy-data",
-        args.caddy_config_share_name or f"{name}-caddy-config",
-    ]
+    # FTP-only: single durable data share mounted at /data.
+    shares_to_ensure = [args.data_share_name or f"{name}-data"]
     ensure_infra(
         resource_group=rg,
         location=location,
@@ -530,7 +479,7 @@ def main() -> None:
         )
 
     # Upload runtime env to Key Vault for the container to fetch at startup.
-    # By default we upload only BASIC_AUTH_* keys to avoid leaking deploy credentials.
+    # By default we upload only selected runtime keys (see --upload-env-prefixes) to avoid leaking deploy credentials.
     if args.upload_env:
         # By default, always upload the repo root .env (runtime) so KV has the latest
         # runtime configuration, even if deploy-time values are loaded from .env.deploy.
@@ -566,9 +515,7 @@ def main() -> None:
         else:
             kv_name_for_secrets = kv_name
 
-    share_workspace = shares_to_ensure[0]
-    caddy_data_share = shares_to_ensure[1]
-    caddy_config_share = shares_to_ensure[2]
+    data_share_name = shares_to_ensure[0]
 
     image = resolve_value(
         name="image",
@@ -590,108 +537,7 @@ def main() -> None:
     build_requested = bool(args.build or args.build_push)
     push_requested = bool(args.push or args.build_push)
 
-    public_domain = resolve_value(
-        name="public_domain",
-        arg_value=args.public_domain,
-        env_names=[VarsEnum.PUBLIC_DOMAIN.value],
-        kv_name=kv_name_for_secrets,
-        kv_secret_name=args.public_domain_secret,
-        interactive=interactive,
-        secret=False,
-        prompt_label="Public domain (e.g. yourdomain.com)",
-        persist_to_kv=persist_to_kv,
-    )
-    if not public_domain:
-        raise SystemExit(
-            "Missing public domain. Provide --public-domain, set PUBLIC_DOMAIN, or store Key Vault secret 'public-domain'."
-        )
-
-    acme_email = resolve_value(
-        name="acme_email",
-        arg_value=args.acme_email,
-        env_names=[VarsEnum.ACME_EMAIL.value],
-        kv_name=kv_name_for_secrets,
-        kv_secret_name=args.acme_email_secret,
-        interactive=interactive,
-        secret=False,
-        prompt_label="ACME email (Let's Encrypt)",
-        persist_to_kv=persist_to_kv,
-    )
-    if not acme_email:
-        raise SystemExit(
-            "Missing ACME email. Provide --acme-email, set ACME_EMAIL, or store Key Vault secret 'acme-email'."
-        )
-
-    basic_auth_user = resolve_value(
-        name="basic_auth_user",
-        arg_value=args.basic_auth_user,
-        env_names=[VarsEnum.BASIC_AUTH_USER.value],
-        kv_name=kv_name_for_secrets,
-        kv_secret_name=args.basic_auth_user_secret,
-        interactive=interactive,
-        secret=False,
-        prompt_label="Basic Auth username",
-        default="admin",
-        persist_to_kv=persist_to_kv,
-    ) or "admin"
-
-    # Only resolve an existing hash from args/env/Key Vault. Do not prompt for a hash.
-    basic_auth_hash_or_password = resolve_value(
-        name="basic_auth_hash",
-        arg_value=args.basic_auth_hash,
-        env_names=[SecretsEnum.BASIC_AUTH_HASH.value],
-        kv_name=kv_name_for_secrets,
-        kv_secret_name=args.basic_auth_hash_secret,
-        interactive=False,
-        secret=True,
-        prompt_label=None,
-        persist_to_kv=persist_to_kv,
-    )
-
-    basic_auth_hash: str | None = None
-    if basic_auth_hash_or_password:
-        if looks_like_bcrypt_hash(basic_auth_hash_or_password):
-            basic_auth_hash = basic_auth_hash_or_password
-        else:
-            # Treat as plaintext password and compute bcrypt hash.
-            try:
-                basic_auth_hash = bcrypt_hash_password(basic_auth_hash_or_password, cost=args.bcrypt_cost)
-            except Exception as e:
-                raise SystemExit(f"Failed to compute bcrypt hash for password provided via --basic-auth-hash: {e}")
-
-    if not basic_auth_hash:
-        # Ask for password and compute the bcrypt hash (Caddy-compatible).
-        # Intentionally NOT loaded from env files.
-        basic_auth_password = (args.basic_auth_password or "").strip()
-        if not basic_auth_password and interactive:
-            basic_auth_password = prompt_secret("Basic Auth password")
-        if not basic_auth_password:
-            raise SystemExit(
-                "Missing Basic Auth password. Provide --basic-auth-password, or store Key Vault secret 'basic-auth-hash'."
-            )
-
-        try:
-            basic_auth_hash = bcrypt_hash_password(basic_auth_password, cost=args.bcrypt_cost)
-        except Exception as e:
-            raise SystemExit(f"Failed to compute bcrypt hash for password: {e}")
-
-        # Offer to persist the computed hash.
-        if persist_to_kv and args.basic_auth_hash_secret and interactive:
-            if prompt_yes_no(
-                f"Save computed bcrypt hash to Key Vault secret '{args.basic_auth_hash_secret}'?",
-                default=True,
-            ):
-                try:
-                    kv_secret_set(kv_name, args.basic_auth_hash_secret, basic_auth_hash)
-                except subprocess.CalledProcessError as e:
-                    print(
-                        "WARNING: Failed to save computed hash to Key Vault; continuing without persisting.",
-                        file=sys.stderr,
-                    )
-                    print(
-                        _format_keyvault_set_help(vault_name=kv_name, stderr=getattr(e, "stderr", None)),
-                        file=sys.stderr,
-                    )
+    # FTP-only deployment: no public domain/TLS proxy/basic auth required.
 
     # Optional registry credentials for private images (e.g. GHCR).
     # If deploying a public image, do not prompt for registry settings.
@@ -862,48 +708,7 @@ def main() -> None:
     else:
         print(f"⚠️  [deploy] Timed out waiting for container deletion after {max_wait}s, proceeding anyway...")
 
-    caddy_image = (args.caddy_image or "").strip() or "caddy:2-alpine"
-
-    if args.prefetch_images:
-        try:
-            print(f"🔎 [docker] prefetching caddy image: {caddy_image}")
-            docker_pull(image=caddy_image)
-
-            # If we are using GHCR for the main image, mirror Caddy to GHCR as well to avoid
-            # multi-registry conflicts (ACI "RegistryErrorResponse" from Docker Hub).
-            # We assume if the user is pushing/using 'ghcr.io', we can also push caddy there.
-            if registry_server and "ghcr.io" in registry_server and registry_username:
-                # Prefer keeping Caddy in the same ghcr.io/<owner>/<repo>/... namespace as the
-                # main image. This avoids pushing to ghcr.io/<owner>/caddy, which often fails in
-                # GitHub Actions due to package scoping/permissions.
-                repo_prefix = ghcr_repo_prefix_for_image(image=image, registry_server=registry_server)
-                if not repo_prefix:
-                    repo_prefix = f"{registry_server}/{registry_username}"
-
-                caddy_mirror_tag = f"{repo_prefix}/caddy:2-alpine"
-
-                if caddy_image == caddy_mirror_tag:
-                    print(f"ℹ️  [docker] Caddy image already in GHCR namespace: {caddy_image}")
-                else:
-                    print(f"🔁 [docker] Mirroring caddy to GHCR: {caddy_mirror_tag}")
-                    try:
-                        # Retag
-                        subprocess.run(["docker", "tag", caddy_image, caddy_mirror_tag], check=True, capture_output=True)
-                        # Push
-                        docker_push(image=caddy_mirror_tag)
-                        # Use the mirrored image in the YAML
-                        caddy_image = caddy_mirror_tag
-                        print(f"✅ [docker] Successfully mirrored caddy. Using: {caddy_image}")
-                    except subprocess.CalledProcessError as e:
-                        hint = _hint_for_ghcr_scope_error(getattr(e, "stderr", None))
-                        if hint:
-                            print(hint, file=sys.stderr)
-                        print(f"⚠️  [warn] Failed to mirror caddy to GHCR ({e}); falling back to {caddy_image}", file=sys.stderr)
-                    except Exception as e:
-                        print(f"⚠️  [warn] Failed to mirror caddy to GHCR ({e}); falling back to {caddy_image}", file=sys.stderr)
-
-        except Exception as e:
-            print(f"⚠️  [warn] Could not prefetch caddy image locally ({e}); continuing.", file=sys.stderr)
+    # FTP-only deployment: no sidecar images to prefetch.
 
     cpu_cores = float(
         args.cpu
@@ -915,6 +720,10 @@ def main() -> None:
         if args.memory is not None
         else (os.getenv(VarsEnum.DEFAULT_MEMORY_GB.value) or str(DEFAULT_MEMORY_GB))
     )
+
+    ftp_port = int((os.getenv(VarsEnum.FTP_PORT.value) or "21").strip() or "21")
+    ftp_passive_port_min = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MIN.value) or "50000").strip() or "50000")
+    ftp_passive_port_max = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MAX.value) or "50100").strip() or "50100")
 
     yaml_text = generate_deploy_yaml(
         name=name,
@@ -930,16 +739,12 @@ def main() -> None:
         storage_key=storage_key,
         kv_name=kv_name,
         dns_label=dns_label,
-        public_domain=public_domain,
-        acme_email=acme_email,
-        basic_auth_user=basic_auth_user,
-        basic_auth_hash=basic_auth_hash,
         cpu_cores=cpu_cores,
         memory_gb=memory_gb,
-        share_workspace=share_workspace,
-        caddy_data_share_name=caddy_data_share,
-        caddy_config_share_name=caddy_config_share,
-        caddy_image=caddy_image,
+        data_share_name=data_share_name,
+        ftp_port=ftp_port,
+        ftp_passive_port_min=ftp_passive_port_min,
+        ftp_passive_port_max=ftp_passive_port_max,
     )
 
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
@@ -972,7 +777,7 @@ def main() -> None:
 
     print("\n[done] Deployed.")
     print(f"  FQDN: {dns_label}.{location}.azurecontainer.io")
-    print(f"  https://{public_domain}/  (VS Code)")
+    print(f"  ftp://{dns_label}.{location}.azurecontainer.io:{ftp_port}")
 
 
 

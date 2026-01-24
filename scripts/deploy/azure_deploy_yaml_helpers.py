@@ -2,11 +2,6 @@ from __future__ import annotations
 
 import math
 
-DEFAULT_APP_PORT = 8080
-
-TLS_CPU_CORES = 0.25
-TLS_MEMORY_GB = 0.25
-
 
 def normalize_aci_memory_gb(memory_gb: float) -> float:
     # ACI requires memoryInGB to be a multiple of 0.1.
@@ -30,54 +25,26 @@ def generate_deploy_yaml(
     storage_key: str,
     kv_name: str,
     dns_label: str,
-    public_domain: str,
-    acme_email: str,
-    basic_auth_user: str,
-    basic_auth_hash: str,
     cpu_cores: float,
     memory_gb: float,
-    share_workspace: str,
-    caddy_data_share_name: str,
-    caddy_config_share_name: str,
-    caddy_image: str,
+    data_share_name: str,
+    ftp_port: int = 21,
+    ftp_passive_port_min: int = 50000,
+    ftp_passive_port_max: int = 50100,
 ) -> str:
     app_memory_gb = normalize_aci_memory_gb(memory_gb)
-    tls_memory_gb = normalize_aci_memory_gb(TLS_MEMORY_GB)
 
     def indent(level: int, text: str) -> str:
         return " " * level + text
 
-    # Caddyfile generated inline
-    caddy_cmd = "\n".join(
-        [
-            "set -eu",
-            "mkdir -p /config/caddy",
-            "cat > /config/caddy/Caddyfile <<'CADDY'",
-            "{",
-            "  email {$ACME_EMAIL}",
-            "}",
-            "",
-            f"{public_domain} {{",
-            "  encode zstd gzip",
-            '  header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"',
-            "",
-            "  # Single Basic Auth layer for all routes",
-            "  basicauth /* {",
-            "    {$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}",
-            "  }",
-            "",
-            "  # Proxy to code-server",
-            "  reverse_proxy http://localhost:8080 {",
-            "    header_up Upgrade {http.request.header.Upgrade}",
-            "    header_up Connection {http.request.header.Connection}",
-            "  }",
-            "}",
-            "CADDY",
-            "",
-            "# Run Caddy with the mounted /data for certs",
-            "exec caddy run --config /config/caddy/Caddyfile --adapter caddyfile",
-        ]
-    )
+    if ftp_port < 1 or ftp_port > 65535:
+        raise ValueError(f"ftp_port must be 1-65535, got {ftp_port}")
+    if ftp_passive_port_min < 1 or ftp_passive_port_min > 65535:
+        raise ValueError(f"ftp_passive_port_min must be 1-65535, got {ftp_passive_port_min}")
+    if ftp_passive_port_max < 1 or ftp_passive_port_max > 65535:
+        raise ValueError(f"ftp_passive_port_max must be 1-65535, got {ftp_passive_port_max}")
+    if ftp_passive_port_max < ftp_passive_port_min:
+        raise ValueError("ftp_passive_port_max must be >= ftp_passive_port_min")
 
     lines: list[str] = [
         "apiVersion: '2023-05-01'",
@@ -107,15 +74,22 @@ def generate_deploy_yaml(
         indent(6, "properties:"),
         indent(8, f"image: {image}"),
         indent(8, "ports:"),
-        indent(10, f"- port: {DEFAULT_APP_PORT}"),  # 8080 for code-server
+        indent(10, f"- port: {ftp_port}"),
         indent(12, "protocol: TCP"),
+    ]
+
+    for p in range(ftp_passive_port_min, ftp_passive_port_max + 1):
+        lines += [
+            indent(10, f"- port: {p}"),
+            indent(12, "protocol: TCP"),
+        ]
+
+    lines += [
         indent(8, "resources:"),
         indent(10, "requests:"),
         indent(12, f"cpu: {cpu_cores}"),
         indent(12, f"memoryInGB: {app_memory_gb}"),
         indent(8, "environmentVariables:"),
-        indent(10, "- name: CODE_SERVER_PORT"),
-        indent(12, "value: '8080'"),
         indent(10, "- name: AZURE_KEYVAULT_URI"),
         indent(12, f"value: 'https://{kv_name}.vault.azure.net/'"),
     ]
@@ -131,50 +105,11 @@ def generate_deploy_yaml(
             indent(12, f"value: '{identity_tenant_id}'"),
         ]
 
-    # Entrypoint: default from Dockerfile (/usr/local/bin/azure_start.sh)
+    # Data volume mount (Azure Files)
     lines += [
         indent(8, "volumeMounts:"),
-        indent(10, "- name: workspace-volume"),
+        indent(10, "- name: data-volume"),
         indent(12, "mountPath: /data"),
-        "",
-        indent(4, "- name: tls-proxy"),
-        indent(6, "properties:"),
-        indent(8, f"image: {caddy_image}"),
-        indent(8, "ports:"),
-        indent(10, "- port: 80"),
-        indent(12, "protocol: TCP"),
-        indent(10, "- port: 443"),
-        indent(12, "protocol: TCP"),
-        indent(8, "resources:"),
-        indent(10, "requests:"),
-        indent(12, f"cpu: {TLS_CPU_CORES}"),
-        indent(12, f"memoryInGB: {tls_memory_gb}"),
-        indent(8, "environmentVariables:"),
-        indent(10, "- name: PUBLIC_DOMAIN"),
-        indent(12, f"value: '{public_domain}'"),
-        indent(10, "- name: ACME_EMAIL"),
-        indent(12, f"value: '{acme_email}'"),
-        indent(10, "- name: FALLBACK_DOMAIN"),
-        indent(12, f"value: '{dns_label}.{location}.azurecontainer.io'"),
-        indent(10, "- name: BASIC_AUTH_USER"),
-        indent(12, f"value: '{basic_auth_user}'"),
-        indent(10, "- name: BASIC_AUTH_HASH"),
-        indent(12, f"secureValue: '{basic_auth_hash}'"),
-        indent(8, "command:"),
-        indent(10, "- sh"),
-        indent(10, "- -lc"),
-        indent(10, "- |"),
-    ]
-
-    for line in caddy_cmd.splitlines():
-        lines.append(indent(12, line))
-
-    lines += [
-        indent(8, "volumeMounts:"),
-        indent(10, "- name: caddy-data"),
-        indent(12, "mountPath: /data"),
-        indent(10, "- name: caddy-config"),
-        indent(12, "mountPath: /config"),
         "",
         indent(2, "osType: Linux"),
         indent(2, "restartPolicy: Always"),
@@ -182,23 +117,18 @@ def generate_deploy_yaml(
         indent(4, "type: Public"),
         indent(4, f"dnsNameLabel: {dns_label}"),
         indent(4, "ports:"),
-        indent(6, "- port: 80"),
-        indent(6, "- port: 443"),
+        indent(6, f"- port: {ftp_port}"),
+    ]
+
+    for p in range(ftp_passive_port_min, ftp_passive_port_max + 1):
+        lines.append(indent(6, f"- port: {p}"))
+
+    lines += [
         "",
         indent(2, "volumes:"),
-        indent(4, "- name: workspace-volume"),
+        indent(4, "- name: data-volume"),
         indent(6, "azureFile:"),
-        indent(8, f"shareName: {share_workspace}"),
-        indent(8, f"storageAccountName: {storage_name}"),
-        indent(8, f"storageAccountKey: {storage_key}"),
-        indent(4, "- name: caddy-data"),
-        indent(6, "azureFile:"),
-        indent(8, f"shareName: {caddy_data_share_name}"),
-        indent(8, f"storageAccountName: {storage_name}"),
-        indent(8, f"storageAccountKey: {storage_key}"),
-        indent(4, "- name: caddy-config"),
-        indent(6, "azureFile:"),
-        indent(8, f"shareName: {caddy_config_share_name}"),
+        indent(8, f"shareName: {data_share_name}"),
         indent(8, f"storageAccountName: {storage_name}"),
         indent(8, f"storageAccountKey: {storage_key}"),
     ]

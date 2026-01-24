@@ -16,7 +16,7 @@ If a key is not in the schema, it is treated as **unknown** and validation fails
 
 ### Vars vs Secrets
 
-- **Vars** are non-sensitive values (e.g. `PUBLIC_DOMAIN`). They may be synced to GitHub Actions **variables**.
+- **Vars** are non-sensitive values (e.g. `AZURE_LOCATION`). They may be synced to GitHub Actions **variables**.
 - **Secrets** are sensitive values (e.g. `GHCR_TOKEN`). They may be synced to GitHub Actions **secrets**.
 
 In code:
@@ -80,7 +80,7 @@ Never use raw string keys. Prefer:
 
 5) Run validation / tests
 
-- `python3 scripts/deploy/validate_env.py`
+- `python scripts/deploy/validate_env.py`
 - `pytest`
 
 ## Add a new secret (example)

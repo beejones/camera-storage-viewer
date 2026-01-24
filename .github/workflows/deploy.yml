@@ -22,113 +22,6 @@ permissions:
   packages: write  # Required to push to GHCR
 
 jobs:
-  mirror-images:
-    name: Mirror upstream images to GHCR
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
-
-    steps:
-    - name: Docker Login (GHCR)
-      uses: docker/login-action@v3
-      with:
-        registry: ghcr.io
-        # Mirror targets are under ghcr.io/beejones/*
-        username: ${{ vars.GHCR_USERNAME || 'beejones' }}
-        password: ${{ secrets.GHCR_TOKEN }}
-
-    - name: Check and mirror Caddy
-      shell: bash
-      env:
-        CADDY_UPSTREAM: caddy:2-alpine
-        # Keep existing tag used elsewhere, plus also publish :latest and :v<version>-alpine
-        CADDY_MIRROR_TRACKING: ghcr.io/beejones/caddy:2-alpine
-        CADDY_MIRROR_REPO: ghcr.io/beejones/caddy
-      run: |
-        set -euo pipefail
-
-        image_digest() {
-          # Returns the sha256 digest (no prefix) for a locally available image tag.
-          docker inspect --format='{{index .RepoDigests 0}}' "$1" 2>/dev/null | awk -F@ '{print $2}'
-        }
-
-        caddy_version_tag() {
-          # Returns vX.Y.Z-alpine
-          local v
-          v=$(docker run --rm --entrypoint caddy "$CADDY_UPSTREAM" version 2>/dev/null | awk '{print $1}' | head -n 1)
-          v=${v#v}
-          if [ -z "$v" ]; then
-            echo ""
-            return 0
-          fi
-          echo "v${v}-alpine"
-        }
-
-        mirror_if_changed() {
-          local upstream="$1"
-          local tracking_tag="$2"   # optional (may be empty)
-          local mirror_repo="$3"    # e.g. ghcr.io/beejones/caddy
-          local version_tag="$4"    # e.g. v2.8.0-alpine
-
-          echo "[mirror] upstream=$upstream"
-          echo "[mirror] repo=$mirror_repo"
-          if [ -n "$tracking_tag" ]; then
-            echo "[mirror] tracking=$tracking_tag"
-          fi
-          if [ -n "$version_tag" ]; then
-            echo "[mirror] version_tag=$version_tag"
-          fi
-
-          docker pull "$upstream" >/dev/null
-          local upstream_digest
-          upstream_digest=$(image_digest "$upstream")
-
-          local mirror_digest=""
-          if docker pull "$mirror_repo:latest" >/dev/null 2>&1; then
-            mirror_digest=$(image_digest "$mirror_repo:latest")
-          fi
-
-          if [ -n "$mirror_digest" ] && [ "$upstream_digest" = "$mirror_digest" ]; then
-            echo "[mirror] up-to-date ($upstream_digest)"
-            return 0
-          fi
-
-          echo "[mirror] updating latest: $mirror_digest -> $upstream_digest"
-
-          # Always update :latest
-          docker tag "$upstream" "$mirror_repo:latest"
-          docker push "$mirror_repo:latest" >/dev/null
-          echo "[mirror] pushed $mirror_repo:latest"
-
-          # Update the tracking tag if provided (e.g. caddy:2-alpine)
-          if [ -n "$tracking_tag" ]; then
-            docker tag "$upstream" "$tracking_tag"
-            docker push "$tracking_tag" >/dev/null
-            echo "[mirror] pushed $tracking_tag"
-          fi
-
-          # Create/update a version tag if we can detect it.
-          if [ -n "$version_tag" ]; then
-            local version_full="$mirror_repo:$version_tag"
-            local version_digest=""
-            if docker pull "$version_full" >/dev/null 2>&1; then
-              version_digest=$(image_digest "$version_full")
-            fi
-            if [ -n "$version_digest" ] && [ "$version_digest" = "$upstream_digest" ]; then
-              echo "[mirror] version tag already matches ($version_full)"
-            else
-              docker tag "$upstream" "$version_full"
-              docker push "$version_full" >/dev/null
-              echo "[mirror] pushed $version_full"
-            fi
-          fi
-        }
-
-        caddy_vtag=$(caddy_version_tag)
-        if [ -z "$caddy_vtag" ]; then
-          echo "::warning::Could not detect Caddy version tag; will only push latest/tracking"
-        fi
-        mirror_if_changed "$CADDY_UPSTREAM" "$CADDY_MIRROR_TRACKING" "$CADDY_MIRROR_REPO" "$caddy_vtag"
-
   deploy:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
@@ -148,7 +41,7 @@ jobs:
         pip install -r requirements.txt
 
     - name: Azure Login
-      uses: azure/login@v1
+      uses: azure/login@v2
       with:
         client-id: ${{ vars.AZURE_CLIENT_ID }}
         tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -173,25 +66,9 @@ jobs:
     - name: Build and Push Docker Image
       env:
         IMAGE: ghcr.io/${{ github.repository }}:latest
-        CADDY_MIRROR: ghcr.io/${{ github.repository }}/caddy:2-alpine
       run: |
         docker build -t $IMAGE -f docker/Dockerfile .
         docker push $IMAGE
-        
-        # Mirror Caddy to GHCR to avoid Docker Hub rate limits/ACE conflicts
-        docker pull caddy:2-alpine
-        docker tag caddy:2-alpine $CADDY_MIRROR
-        docker push $CADDY_MIRROR
-
-        caddy_vtag=$(docker run --rm --entrypoint caddy caddy:2-alpine version 2>/dev/null | awk '{print $1}' | head -n 1)
-        caddy_vtag=${caddy_vtag#v}
-        if [ -n "$caddy_vtag" ]; then
-          CADDY_VERSION_MIRROR=ghcr.io/${{ github.repository }}/caddy:v${caddy_vtag}-alpine
-          docker tag caddy:2-alpine $CADDY_VERSION_MIRROR
-          docker push $CADDY_VERSION_MIRROR
-        else
-          echo "::warning::Could not detect Caddy version; skipping version tag"
-        fi
 
     - name: Create .env.deploy from vars/secrets
       shell: bash
@@ -202,14 +79,6 @@ jobs:
         # `.env` is created from RUNTIME_ENV_DOTENV above.
         # `.env.deploy` is generated here from repo vars/secrets and workflow inputs.
 
-        if [ -z "${{ vars.PUBLIC_DOMAIN }}" ]; then
-          echo "::error::Missing repo variable PUBLIC_DOMAIN"
-          exit 1
-        fi
-        if [ -z "${{ vars.ACME_EMAIL }}" ]; then
-          echo "::error::Missing repo variable ACME_EMAIL"
-          exit 1
-        fi
         if [ -z "${{ secrets.GHCR_TOKEN }}" ]; then
           echo "::error::Missing repo secret GHCR_TOKEN"
           exit 1
@@ -231,9 +100,6 @@ jobs:
           echo ""
           echo "CONTAINER_IMAGE=ghcr.io/${{ github.repository }}:latest"
           echo ""
-          echo "PUBLIC_DOMAIN=${{ vars.PUBLIC_DOMAIN }}"
-          echo "ACME_EMAIL=${{ vars.ACME_EMAIL }}"
-          echo ""
           echo "GHCR_PRIVATE=true"
           echo "GHCR_USERNAME=${{ vars.GHCR_USERNAME || github.actor }}"
           echo "GHCR_TOKEN=${{ secrets.GHCR_TOKEN }}"
@@ -243,7 +109,7 @@ jobs:
 
     - name: Validate .env and .env.deploy
       run: |
-        python3 scripts/deploy/validate_env.py
+        python scripts/deploy/validate_env.py
 
     - name: Deploy to Azure
       id: deploy
@@ -253,13 +119,12 @@ jobs:
         # Use --no-interactive to ensure no prompts
         # Use --no-set-vars-secrets because we are already running in Actions
         # Use --no-publish because we already built and pushed above
-        python3 scripts/deploy/azure_deploy_container.py \
+        python scripts/deploy/azure_deploy_container.py \
           --no-interactive \
           --no-set-vars-secrets \
           --no-publish \
           --upload-env \
           --env-file .env.deploy \
-          --caddy-image ghcr.io/${{ github.repository }}/caddy:2-alpine \
           2>&1 | tee deploy.log
 
     - name: Dump generated ACI YAML (sanitized)

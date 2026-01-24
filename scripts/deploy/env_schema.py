@@ -126,7 +126,7 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
     ),
     EnvKeySpec(
         key=SecretsEnum.BASIC_AUTH_HASH,
-        mandatory=True,
+        mandatory=False,
         targets=frozenset({EnvTarget.DOTENV_RUNTIME, EnvTarget.GH_ACTIONS_SECRET}),
     ),
     EnvKeySpec(
@@ -272,12 +272,14 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
     ),
     EnvKeySpec(
         key=VarsEnum.PUBLIC_DOMAIN,
-        mandatory=True,
+        mandatory=False,
+        default=None,
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(
         key=VarsEnum.ACME_EMAIL,
-        mandatory=True,
+        mandatory=False,
+        default=None,
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(

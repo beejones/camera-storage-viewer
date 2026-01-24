@@ -7,7 +7,7 @@ Deploy an Azure Container Instance (ACI) that:
 3. Follows the “protected Azure container” model (cloned from https://github.com/beejones/camera-storage-viewer/):
   - secrets stored in Key Vault
   - access via Managed Identity
-  - viewer authentication enforced via Caddy (as already set up)
+  - viewer authentication TBD (viewer not yet implemented; FTP-only deployment for now)
 4. Stores clips and application state on **Azure Files** mounted into the container:
   - clips under `out/videos/<camera_id>/...`
   - database under `out/databases/...`
@@ -27,11 +27,11 @@ Non-goals (initially):
 ## Proposed Architecture (MVP)
 ### Container Group
 Keep the existing 2-container pattern and add an application process:
-- `tls-proxy` (Caddy): HTTPS + Basic Auth for the web UI (as today).
+- (Future) Viewer/API container(s): authentication and TLS strategy TBD.
 - `camera-storage-viewer`: the app processes (FTP server + web API/UI). (No code-server for this project.)
 
 Expose ports:
-- HTTPS: `443` (Caddy)
+- FTP: `21` + passive range (data ports)
 - HTTP: `80` (optional redirect)
 - FTP control: `21`
 - FTP passive range: e.g. `50000-50100` (size TBD)
@@ -78,7 +78,7 @@ Represent cameras as first-class entities:
 
 Authorization model:
 - FTP: per-camera user/password; no anonymous.
-- Web UI: Basic Auth at Caddy (single operator credential for MVP).
+- Viewer auth/TLS: TBD.
 
 ## Playback + Timeline UX (MVP)
 Key UI screens:
@@ -101,7 +101,7 @@ Backend API endpoints (example):
   - restrict inbound IPs (if your ISP IP is stable)
   - rotate credentials
   - store credentials in Key Vault
-- Web UI behind TLS + Basic Auth (Caddy) as today.
+- FTP-only MVP; viewer authentication TBD.
 
 ## Retention
 - A scheduled job deletes old clips based on `RETENTION_DAYS` (e.g. 30).

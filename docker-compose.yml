@@ -33,36 +33,6 @@ services:
     networks:
       - internal
 
-  # Caddy TLS proxy sidecar
-  caddy:
-    image: caddy:2-alpine
-    container_name: tls-proxy
-    restart: unless-stopped
-    profiles:
-      - web
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      # Domain for TLS certificate
-      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
-      ACME_EMAIL: ${ACME_EMAIL:-}
-      # Basic Auth credentials (generate hash with: docker run --rm caddy:2-alpine caddy hash-password --plaintext 'yourPassword')
-      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-admin}
-      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:-}
-    volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - ftp
-    networks:
-      - internal
-
 networks:
   internal:
     driver: bridge
-
-volumes:
-  caddy_data:
-  caddy_config:
