@@ -4,6 +4,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+  curl \
   ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
@@ -12,10 +13,14 @@ RUN pip install --no-cache-dir -r /tmp/requirements.web.runtime.txt
 
 COPY src /app/src
 
+COPY docker/azure_start.sh /usr/local/bin/azure_start.sh
+RUN chmod +x /usr/local/bin/azure_start.sh
+
 ENV PYTHONPATH=/app \
     OUT_DIR=/data \
     WEB_PORT=8081
 
-EXPOSE 8081
+EXPOSE 80 8081
 
-CMD ["uvicorn", "src.web_api:app", "--host", "0.0.0.0", "--port", "8081"]
+ENTRYPOINT ["/usr/local/bin/azure_start.sh"]
+CMD ["sh", "-lc", "uvicorn src.web_api:app --host 0.0.0.0 --port ${WEB_PORT:-8081}"]

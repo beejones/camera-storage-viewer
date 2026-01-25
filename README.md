@@ -27,6 +27,9 @@ This starts:
 - the FTP server container (`ftp`)
 - the viewer backend API container (`web`) on `http://localhost:8081`
 
+Optional (recommended for a nicer local URL):
+- the Caddy reverse proxy (`caddy`) on `http://localhost/` (port 80)
+
 If you only want FTP:
 
 ```bash
@@ -38,6 +41,9 @@ FTP will be available at `localhost:21`.
 Viewer API will be available at `http://localhost:8081`.
 
 Viewer UI will be available at `http://localhost:8081/`.
+
+If you use the Caddy proxy (default in docker-compose), the Viewer UI is also available at:
+- `http://localhost/`
 
 Uploaded files land under:
 - `out/incoming/<camera_id>/...`

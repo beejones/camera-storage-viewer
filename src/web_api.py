@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated
 
+from dotenv import dotenv_values
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,12 +22,43 @@ from src.viewer_db import (
 from src.web_models import CameraOut, ClipDetailOut, ClipOut
 
 
+def _merged_env() -> dict[str, str]:
+    """Return merged env from (optional) dotenv file + process env.
+
+    Azure deployments can fetch a runtime .env into RUNTIME_ENV_PATH via azure_start.sh.
+    Locally, docker-compose typically supplies env vars directly.
+    """
+
+    env_path_candidates = [
+        Path(str(os.getenv("RUNTIME_ENV_PATH", "")).strip()).expanduser() if os.getenv("RUNTIME_ENV_PATH") else None,
+        Path("/app/.env"),
+    ]
+
+    file_kv: dict[str, str] = {}
+    for candidate in env_path_candidates:
+        if not candidate:
+            continue
+        if candidate.exists():
+            raw = dotenv_values(candidate)
+            for k, v in raw.items():
+                if not k:
+                    continue
+                file_kv[str(k)] = "" if v is None else str(v)
+            break
+
+    merged = dict(file_kv)
+    merged.update(os.environ)
+    return merged
+
+
 def _out_dir() -> Path:
-    return Path(str(os.getenv("OUT_DIR", "/data")).strip() or "/data")
+    env = _merged_env()
+    return Path(str(env.get("OUT_DIR", "/data")).strip() or "/data")
 
 
 def _require_token(request: Request) -> None:
-    token = str(os.getenv("VIEWER_AUTH_TOKEN", "")).strip()
+    env = _merged_env()
+    token = str(env.get("VIEWER_AUTH_TOKEN", "")).strip()
     if not token:
         return
     auth = request.headers.get("authorization") or ""

@@ -1,0 +1,7 @@
+]633;E;{   echo "== Time =="\x3b date -Is\x3b   echo\x3b   echo "== Container groups in RG =="\x3b   if command -v az >/dev/null 2>&1\x3b then     az container list -g camera-storage-viewer-rg --query '[].{name:name,fqdn:ipAddress.fqdn,ports:ipAddress.ports}' -o table 2>&1 || true\x3b   else     echo "az not installed"\x3b   fi\x3b } >> "$REPORT" 2>&1;745b2e18-aaff-4ae6-9967-86d1f013a0e0]633;C== Time ==
+2026-01-26T00:17:43+01:00
+
+== Container groups in RG ==
+Name                   Fqdn
+---------------------  --------------------------------------------------
+camera-storage-viewer  camera-storage-viewer.westeurope.azurecontainer.io

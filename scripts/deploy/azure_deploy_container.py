@@ -140,8 +140,111 @@ def generate_deploy_yaml(
     )
 
 
+def generate_deploy_yaml_web(
+    *,
+    name: str,
+    location: str,
+    image: str,
+    registry_server: str | None,
+    registry_username: str | None,
+    registry_password: str | None,
+    identity_id: str,
+    identity_client_id: str | None,
+    identity_tenant_id: str | None,
+    storage_name: str,
+    storage_key: str,
+    kv_name: str,
+    dns_label: str,
+    cpu_cores: float,
+    memory_gb: float,
+    data_share_name: str,
+    web_port: int = 80,
+) -> str:
+    """Generate ACI YAML for the viewer web service (web-only container group)."""
+
+    return yaml_helpers.generate_deploy_yaml_web(
+        name=name,
+        location=location,
+        image=image,
+        registry_server=registry_server,
+        registry_username=registry_username,
+        registry_password=registry_password,
+        identity_id=identity_id,
+        identity_client_id=identity_client_id,
+        identity_tenant_id=identity_tenant_id,
+        storage_name=storage_name,
+        storage_key=storage_key,
+        kv_name=kv_name,
+        dns_label=dns_label,
+        cpu_cores=cpu_cores,
+        memory_gb=memory_gb,
+        data_share_name=data_share_name,
+        web_port=web_port,
+    )
+
+
+def generate_deploy_yaml_web_caddy(
+    *,
+    name: str,
+    location: str,
+    image: str,
+    registry_server: str | None,
+    registry_username: str | None,
+    registry_password: str | None,
+    identity_id: str,
+    identity_client_id: str | None,
+    identity_tenant_id: str | None,
+    storage_name: str,
+    storage_key: str,
+    kv_name: str,
+    dns_label: str,
+    cpu_cores: float,
+    memory_gb: float,
+    data_share_name: str,
+    public_domain: str,
+    acme_email: str | None = None,
+    caddy_image: str = "caddy:2",
+    web_port: int = 8081,
+) -> str:
+    """Generate ACI YAML for the viewer web service behind Caddy (80/443)."""
+
+    return yaml_helpers.generate_deploy_yaml_web_caddy(
+        name=name,
+        location=location,
+        image=image,
+        registry_server=registry_server,
+        registry_username=registry_username,
+        registry_password=registry_password,
+        identity_id=identity_id,
+        identity_client_id=identity_client_id,
+        identity_tenant_id=identity_tenant_id,
+        storage_name=storage_name,
+        storage_key=storage_key,
+        kv_name=kv_name,
+        dns_label=dns_label,
+        cpu_cores=cpu_cores,
+        memory_gb=memory_gb,
+        data_share_name=data_share_name,
+        public_domain=public_domain,
+        acme_email=acme_email,
+        caddy_image=caddy_image,
+        web_port=web_port,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Deploy camera-storage-viewer to Azure Container Instances")
+
+    parser.add_argument(
+        "--service",
+        choices=["ftp", "web", "web-caddy"],
+        default="ftp",
+        help=(
+            "Which service to deploy. 'ftp' deploys the FTP-only container group (default). "
+            "'web' deploys a web-only container group that exposes a single HTTP port (typically 80). "
+            "'web-caddy' deploys web plus a Caddy sidecar exposing ports 80/443 for a custom domain."
+        ),
+    )
 
     # These can come from --env-file (recommended) so they are not required.
     parser.add_argument("--resource-group", "-g", required=False, default=None)
@@ -751,45 +854,106 @@ def main() -> None:
         else (os.getenv(VarsEnum.DEFAULT_MEMORY_GB.value) or str(DEFAULT_MEMORY_GB))
     )
 
-    ftp_port = int((os.getenv(VarsEnum.FTP_PORT.value) or "21").strip() or "21")
-    ftp_passive_port_min = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MIN.value) or "50000").strip() or "50000")
-    ftp_passive_port_max = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MAX.value) or "50003").strip() or "50003")
+    service = str(args.service or "ftp").strip().lower()
 
-    # Azure Container Instances has a hard limit of 5 public ports per container group.
-    # FTP needs 1 control port + N passive ports.
-    ports_unique = sorted(set([ftp_port] + list(range(ftp_passive_port_min, ftp_passive_port_max + 1))))
-    if len(ports_unique) > 5:
-        raise SystemExit(
-            "ACI supports at most 5 public ports per container group. "
-            f"Your FTP port config would expose {len(ports_unique)} ports. "
-            "Set FTP_PASSIVE_PORT_MAX so the passive range is <= 4 ports (e.g. 50000-50003), "
-            "or deploy to a platform that supports larger port ranges."
-        )
+    if service == "web":
+        # Web-only container group: expose one port (default: 80).
+        web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "80").strip() or "80")
+        try:
+            yaml_text = generate_deploy_yaml_web(
+                name=name,
+                location=location,
+                image=image,
+                registry_server=registry_server,
+                registry_username=registry_username,
+                registry_password=registry_password,
+                identity_id=identity_id,
+                identity_client_id=identity_client_id,
+                identity_tenant_id=identity_tenant_id,
+                storage_name=storage_name,
+                storage_key=storage_key,
+                kv_name=kv_name,
+                dns_label=dns_label,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                data_share_name=data_share_name,
+                web_port=web_port,
+            )
+        except ValueError as e:
+            raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
+    elif service == "web-caddy":
+        # Web + Caddy sidecar: expose 80/443 only.
+        public_domain = str(os.getenv(VarsEnum.PUBLIC_DOMAIN.value) or "").strip()
+        if not public_domain:
+            raise SystemExit(
+                f"[deploy] {VarsEnum.PUBLIC_DOMAIN.value} is required for --service web-caddy (e.g. camera-storage-viewer.zenia.eu)"
+            )
+        acme_email = str(os.getenv(VarsEnum.ACME_EMAIL.value) or "").strip() or None
+        web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "8081").strip() or "8081")
+        try:
+            yaml_text = generate_deploy_yaml_web_caddy(
+                name=name,
+                location=location,
+                image=image,
+                registry_server=registry_server,
+                registry_username=registry_username,
+                registry_password=registry_password,
+                identity_id=identity_id,
+                identity_client_id=identity_client_id,
+                identity_tenant_id=identity_tenant_id,
+                storage_name=storage_name,
+                storage_key=storage_key,
+                kv_name=kv_name,
+                dns_label=dns_label,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                data_share_name=data_share_name,
+                public_domain=public_domain,
+                acme_email=acme_email,
+                web_port=web_port,
+            )
+        except ValueError as e:
+            raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
+    else:
+        ftp_port = int((os.getenv(VarsEnum.FTP_PORT.value) or "21").strip() or "21")
+        ftp_passive_port_min = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MIN.value) or "50000").strip() or "50000")
+        ftp_passive_port_max = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MAX.value) or "50003").strip() or "50003")
 
-    try:
-        yaml_text = generate_deploy_yaml(
-        name=name,
-        location=location,
-        image=image,
-        registry_server=registry_server,
-        registry_username=registry_username,
-        registry_password=registry_password,
-        identity_id=identity_id,
-        identity_client_id=identity_client_id,
-        identity_tenant_id=identity_tenant_id,
-        storage_name=storage_name,
-        storage_key=storage_key,
-        kv_name=kv_name,
-        dns_label=dns_label,
-        cpu_cores=cpu_cores,
-        memory_gb=memory_gb,
-        data_share_name=data_share_name,
-        ftp_port=ftp_port,
-        ftp_passive_port_min=ftp_passive_port_min,
-        ftp_passive_port_max=ftp_passive_port_max,
-        )
-    except ValueError as e:
-        raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
+        # Azure Container Instances has a hard limit of 5 public ports per container group.
+        # FTP needs 1 control port + N passive ports.
+        ports_unique = sorted(set([ftp_port] + list(range(ftp_passive_port_min, ftp_passive_port_max + 1))))
+        if len(ports_unique) > 5:
+            raise SystemExit(
+                "ACI supports at most 5 public ports per container group. "
+                f"Your FTP port config would expose {len(ports_unique)} ports. "
+                "Set FTP_PASSIVE_PORT_MAX so the passive range is <= 4 ports (e.g. 50000-50003), "
+                "or deploy to a platform that supports larger port ranges."
+            )
+
+        try:
+            yaml_text = generate_deploy_yaml(
+                name=name,
+                location=location,
+                image=image,
+                registry_server=registry_server,
+                registry_username=registry_username,
+                registry_password=registry_password,
+                identity_id=identity_id,
+                identity_client_id=identity_client_id,
+                identity_tenant_id=identity_tenant_id,
+                storage_name=storage_name,
+                storage_key=storage_key,
+                kv_name=kv_name,
+                dns_label=dns_label,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                data_share_name=data_share_name,
+                ftp_port=ftp_port,
+                ftp_passive_port_min=ftp_passive_port_min,
+                ftp_passive_port_max=ftp_passive_port_max,
+            )
+        except ValueError as e:
+            raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
 
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
         f.write(yaml_text)
@@ -821,7 +985,12 @@ def main() -> None:
 
     print("\n[done] Deployed.")
     print(f"  FQDN: {dns_label}.{location}.azurecontainer.io")
-    print(f"  ftp://{dns_label}.{location}.azurecontainer.io:{ftp_port}")
+    if service == "web":
+        print(f"  http://{dns_label}.{location}.azurecontainer.io")
+    elif service == "web-caddy":
+        print(f"  https://{public_domain}")
+    else:
+        print(f"  ftp://{dns_label}.{location}.azurecontainer.io:{ftp_port}")
 
 
 

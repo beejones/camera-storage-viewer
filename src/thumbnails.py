@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 from src.viewer_db import DbClip
 
 
@@ -18,7 +20,26 @@ class ThumbnailConfig:
 
 
 def load_thumbnail_config() -> ThumbnailConfig:
-    raw = str(os.getenv("THUMBNAIL_GENERATION", "")).strip().lower()
+    # Support runtime .env files for Azure deployments (azure_start.sh writes /app/.env).
+    env_path_candidates = [
+        Path(str(os.getenv("RUNTIME_ENV_PATH", "")).strip()).expanduser() if os.getenv("RUNTIME_ENV_PATH") else None,
+        Path("/app/.env"),
+    ]
+    file_kv: dict[str, str] = {}
+    for candidate in env_path_candidates:
+        if not candidate:
+            continue
+        if candidate.exists():
+            raw_kv = dotenv_values(candidate)
+            for k, v in raw_kv.items():
+                if not k:
+                    continue
+                file_kv[str(k)] = "" if v is None else str(v)
+            break
+    merged = dict(file_kv)
+    merged.update(os.environ)
+
+    raw = str(merged.get("THUMBNAIL_GENERATION", "")).strip().lower()
     enabled = raw in {"1", "true", "yes", "y", "on"}
     return ThumbnailConfig(enabled=enabled)
 
