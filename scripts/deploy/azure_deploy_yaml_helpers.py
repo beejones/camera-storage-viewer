@@ -40,6 +40,9 @@ def generate_deploy_yaml(
     caddy_cpu_cores: float,
     caddy_memory_gb: float,
     app_port: int,
+    app_ports: list[int] | None = None,
+    app_command: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
     other_image: str | None = None,
     other_cpu_cores: float = 0.5,
     other_memory_gb: float = 0.5,
@@ -47,6 +50,9 @@ def generate_deploy_yaml(
     app_memory_gb = normalize_aci_memory_gb(app_memory_gb)
     tls_memory_gb = normalize_aci_memory_gb(caddy_memory_gb)
     other_mem_gb_norm = normalize_aci_memory_gb(other_memory_gb)
+    
+    # Normalize app_ports. We always include app_port (legacy compatibility)
+    all_app_ports = sorted(list(set(([app_port] if app_port else []) + (app_ports or []))))
 
     def indent(level: int, text: str) -> str:
         return " " * level + text
@@ -112,18 +118,39 @@ def generate_deploy_yaml(
         indent(6, "properties:"),
         indent(8, f"image: {image}"),
         indent(8, "ports:"),
-        indent(10, f"- port: {app_port}"),  # Main application port
-        indent(12, "protocol: TCP"),
+    ]
+    
+    for p in all_app_ports:
+        lines += [
+            indent(10, f"- port: {p}"),
+            indent(12, "protocol: TCP"),
+        ]
+
+    lines += [
         indent(8, "resources:"),
         indent(10, "requests:"),
         indent(12, f"cpu: {app_cpu_cores}"),
         indent(12, f"memoryInGB: {app_memory_gb}"),
         indent(8, "environmentVariables:"),
-        indent(10, "- name: CODE_SERVER_PORT"),
-        indent(12, f"value: '{app_port}'"),
         indent(10, "- name: AZURE_KEYVAULT_URI"),
         indent(12, f"value: 'https://{kv_name}.vault.azure.net/'"),
     ]
+
+    # Inject CODE_SERVER_PORT for legacy apps that expect it.
+    # Only if app_port is set AND we don't already have WEB_PORT (which is the new way)
+    if app_port and (not extra_env or "WEB_PORT" not in extra_env):
+        lines += [
+            indent(10, "- name: CODE_SERVER_PORT"),
+            indent(12, f"value: '{app_port}'"),
+        ]
+
+    # Inject extra env variables (e.g. WEB_PORT from Compose)
+    if extra_env:
+        for k, v in extra_env.items():
+            lines += [
+                indent(10, f"- name: {k}"),
+                indent(12, f"value: '{v}'"),
+            ]
 
     if identity_client_id:
         lines += [
@@ -135,6 +162,11 @@ def generate_deploy_yaml(
             indent(10, "- name: AZURE_TENANT_ID"),
             indent(12, f"value: '{identity_tenant_id}'"),
         ]
+
+    if app_command:
+        lines += [indent(8, "command:")]
+        for arg in app_command:
+            lines += [indent(10, f"- {arg}")]
 
     # Entrypoint: default from Dockerfile (/usr/local/bin/azure_start.sh)
     lines += [

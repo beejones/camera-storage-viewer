@@ -110,14 +110,19 @@ def test_load_hooks_soft_fail_on_import_error(repo_root):
     assert hooks._impl is None
     assert hooks._soft_fail is True
 
-def test_deploy_plan_app_ports():
+def test_deploy_plan_full_metadata():
     plan = deploy_hooks.DeployPlan(
         name="test", location="loc", dns_label="dns",
         deploy_mode="full", compose_service_name="app", deploy_role="app",
         app_image="img", caddy_image="caddy", other_image=None,
         app_cpu=1.0, app_memory=1.0, caddy_cpu=1.0, caddy_memory=1.0,
         other_cpu=1.0, other_memory=1.0,
-        public_domain="dom.com", app_port=80, app_ports=[80, 8080]
+        public_domain="dom.com", app_port=80, 
+        app_ports=[80, 8080],
+        web_command=["python", "main.py"],
+        extra_env={"FOO": "BAR"}
     )
     assert plan.app_port == 80
     assert plan.app_ports == [80, 8080]
+    assert plan.web_command == ["python", "main.py"]
+    assert plan.extra_env == {"FOO": "BAR"}

@@ -132,6 +132,9 @@ def generate_deploy_yaml(
     caddy_cpu_cores: float,
     caddy_memory_gb: float,
     app_port: int,
+    app_ports: list[int] | None = None,
+    app_command: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
     other_image: str | None = None,
     other_cpu_cores: float = 0.5,
     other_memory_gb: float = 0.5,
@@ -165,6 +168,9 @@ def generate_deploy_yaml(
         caddy_cpu_cores=caddy_cpu_cores,
         caddy_memory_gb=caddy_memory_gb,
         app_port=app_port,
+        app_ports=app_ports,
+        app_command=app_command,
+        extra_env=extra_env,
         other_image=other_image,
         other_cpu_cores=other_cpu_cores,
         other_memory_gb=other_memory_gb,
@@ -370,15 +376,16 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     # Prefer a stable mirror to avoid Docker Hub rate limiting in ACI.
     # Note: ghcr.io/caddyserver/caddy does not publish a '2-alpine' tag; we use a mirror.
     parser.add_argument("--caddy-image", default=None)
+
     parser.add_argument(
         "--compose-app-service",
         default=None,
-        help="Service name in docker-compose.yml for the application (default: auto-detect)",
+        help="Service name in docker-compose.yml for the app (default: auto-detect via x-deploy-role)",
     )
     parser.add_argument(
         "--compose-caddy-service",
         default=None,
-        help="Service name in docker-compose.yml for the caddy sidecar (default: auto-detect)",
+        help="Service name in docker-compose.yml for the caddy sidecar (default: auto-detect via x-deploy-role)",
     )
 
     parser.add_argument(
@@ -432,22 +439,29 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             services = compose_config.get("services", {})
     
             # Service Discovery via x-deploy-role (Concept: Explicit Contract)
-            detected_app_name = None
-            detected_caddy_name = None
-            detected_other_name = None
+            role_map = compose_helpers.detect_services_by_role(compose_config)
+            
+            def get_single_role(role: str, required: bool = False) -> Optional[str]:
+                found = role_map.get(role, [])
+                if len(found) > 1:
+                    msg = f"Multiple services found for role '{role}': {found}. Use --compose-{role}-service to disambiguate."
+                    if required:
+                        raise SystemExit(f"❌ [deploy] {msg}")
+                    print(f"⚠️  [warn] {msg}", file=sys.stderr)
+                return found[0] if found else None
+
+            detected_app_name = get_single_role("app", required=True)
+            detected_caddy_name = get_single_role("sidecar")
+            detected_ftp_name = get_single_role("ftp")
+            
+            # fallback for older versions or simple cases
+            all_named_roles = [n for names in role_map.values() for n in names]
+            detected_other_name = next((n for n in services if n not in all_named_roles), None)
     
-            for name, svc in services.items():
-                role = compose_helpers.get_deploy_role(svc)
-                if role == "app":
-                    detected_app_name = name
-                elif role == "sidecar":
-                    detected_caddy_name = name
-                else:
-                    detected_other_name = name
-    
-            # 1. Resolve Sidecar Service
         except Exception as e:
             print(f"⚠️  [warn] Failed to load docker-compose.yml defaults: {e}", file=sys.stderr)
+            services = {}
+            detected_app_name = detected_caddy_name = detected_other_name = detected_ftp_name = None
     
         # CLI Argument > x-deploy-role > Auto-detect fallback (none)
         caddy_service_name = args.compose_caddy_service or detected_caddy_name
@@ -462,6 +476,10 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         # 2. Resolve App Service
         # CLI Argument > x-deploy-role > Auto-detect fallback (none)
         app_service_name = args.compose_app_service or detected_app_name
+        
+        config_app_ports = []
+        config_app_command = None
+        config_extra_env = {}
     
         if app_service_name:
             if app_service_name in services:
@@ -476,31 +494,46 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
                 if raw_context:
                     config_docker_context = str((repo_root / raw_context).resolve())
     
-                # Determine app port
+                # Determine app command and ports
+                # Determine app command
+                raw_command = compose_helpers.get_command(app_service)
+                if raw_command:
+                    config_app_command = compose_helpers.normalize_command(raw_command)
+                    print(f"ℹ️  [deploy] Using app command from compose: {config_app_command}")
+
+                # Determine app ports
                 app_ports = compose_helpers.get_ports(app_service)
                 if app_ports:
                     for p in app_ports:
+                        port_val = None
                         # Handle "HOST:CONTAINER" string format which PyYAML returns
                         if isinstance(p, str): 
                             if ":" in p:
-                                parts = p.split(":")
-                                config_app_port = int(parts[-1])
+                                port_val = int(p.split(":")[-1])
                             else:
-                                config_app_port = int(p)
-                            break
+                                port_val = int(p)
                         elif isinstance(p, int):
-                            config_app_port = p
-                            break
-                        elif isinstance(p, dict):
-                            # Handle long syntax: ports: [{ target: 8080, published: 80, ... }]
-                            # We want the container port (target)
-                            if "target" in p:
-                                config_app_port = int(p["target"])
-                                break
-                else:
+                            port_val = p
+                        elif isinstance(p, dict) and "target" in p:
+                            port_val = int(p["target"])
+                        
+                        if port_val:
+                            config_app_ports.append(port_val)
+
+                    if config_app_ports:
+                        config_app_port = config_app_ports[0] # primary fallback
+
+                # Extract special env vars (e.g. WEB_PORT)
+                web_port_env = compose_helpers.get_env_var(app_service, "WEB_PORT")
+                if web_port_env:
+                    config_extra_env["WEB_PORT"] = web_port_env
+                
+                # If ports are missing, try legacy fallback
+                if not config_app_ports:
                     port_env = compose_helpers.get_env_var(app_service, "CODE_SERVER_PORT")
                     if port_env:
                         config_app_port = int(port_env)
+                        config_app_ports.append(config_app_port)
             else:
                 print(f"⚠️  [warn] Targeted App service '{app_service_name}' not found", file=sys.stderr)
         else:
@@ -1129,25 +1162,26 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     
         # Create DeployPlan for hooks
         plan = deploy_hooks.DeployPlan(
-        name=name,
-        location=location,
-        dns_label=dns_label,
-        deploy_mode="full", # Concept:Requested mode (could be CLI arg if we add one)
-        compose_service_name=app_service_name,
-        deploy_role="app",
-        app_image=image,
-        caddy_image=caddy_image,
-        other_image=other_image,
-        app_cpu=app_cpu_cores,
-        app_memory=app_memory_gb,
-        caddy_cpu=caddy_cpu_cores,
-        caddy_memory=caddy_memory_gb,
-        other_cpu=other_cpu_cores,
-        other_memory=other_memory_gb,
-        app_port=config_app_port,
-        app_ports=compose_helpers.get_ports(services[app_service_name]) if app_service_name in services else [],
-        web_command=compose_helpers.get_command(services[app_service_name]) if app_service_name in services else None,
-        public_domain=public_domain,
+            name=name,
+            location=location,
+            dns_label=dns_label,
+            deploy_mode="full",
+            compose_service_name=app_service_name or "app",
+            deploy_role="app",
+            app_image=image,
+            caddy_image=caddy_image,
+            other_image=other_image,
+            app_cpu=app_cpu_cores,
+            app_memory=app_memory_gb,
+            caddy_cpu=caddy_cpu_cores,
+            caddy_memory=caddy_memory_gb,
+            other_cpu=other_cpu_cores,
+            other_memory=other_memory_gb,
+            app_port=config_app_port,
+            app_ports=config_app_ports,
+            web_command=config_app_command,
+            extra_env=config_extra_env,
+            public_domain=public_domain,
         )
     
         # Hook: build_deploy_plan
@@ -1158,35 +1192,38 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         hooks.call("pre_render_yaml", ctx, plan)
     
         yaml_text = generate_deploy_yaml(
-        name=plan.name,
-        location=plan.location,
-        image=plan.app_image,
-        registry_server=registry_server,
-        registry_username=registry_username,
-        registry_password=registry_password,
-        identity_id=identity_id,
-        identity_client_id=identity_client_id,
-        identity_tenant_id=identity_tenant_id,
-        storage_name=storage_name,
-        storage_key=storage_key,
-        kv_name=kv_name,
-        dns_label=plan.dns_label,
-        public_domain=plan.public_domain,
-        acme_email=acme_email,
-        basic_auth_user=basic_auth_user,
-        basic_auth_hash=basic_auth_hash,
-        app_cpu_cores=plan.app_cpu,
-        app_memory_gb=plan.app_memory,
-        share_workspace=share_workspace,
-        caddy_data_share_name=caddy_data_share,
-        caddy_config_share_name=caddy_config_share,
-        caddy_image=plan.caddy_image,
-        caddy_cpu_cores=plan.caddy_cpu,
-        caddy_memory_gb=plan.caddy_memory,
-        app_port=plan.app_port,
-        other_image=plan.other_image,
-        other_cpu_cores=plan.other_cpu,
-        other_memory_gb=plan.other_memory,
+            name=plan.name,
+            location=plan.location,
+            image=plan.app_image,
+            registry_server=registry_server,
+            registry_username=registry_username,
+            registry_password=registry_password,
+            identity_id=identity_id,
+            identity_client_id=identity_client_id,
+            identity_tenant_id=identity_tenant_id,
+            storage_name=storage_name,
+            storage_key=storage_key,
+            kv_name=kv_name,
+            dns_label=plan.dns_label,
+            public_domain=plan.public_domain,
+            acme_email=acme_email,
+            basic_auth_user=basic_auth_user,
+            basic_auth_hash=basic_auth_hash,
+            app_cpu_cores=plan.app_cpu,
+            app_memory_gb=plan.app_memory,
+            share_workspace=share_workspace,
+            caddy_data_share_name=caddy_data_share,
+            caddy_config_share_name=caddy_config_share,
+            caddy_image=plan.caddy_image,
+            caddy_cpu_cores=plan.caddy_cpu,
+            caddy_memory_gb=plan.caddy_memory,
+            app_port=plan.app_port,
+            app_ports=plan.app_ports,
+            app_command=plan.web_command,
+            extra_env=plan.extra_env,
+            other_image=plan.other_image,
+            other_cpu_cores=plan.other_cpu,
+            other_memory_gb=plan.other_memory,
         )
     
         # Hook: post_render_yaml

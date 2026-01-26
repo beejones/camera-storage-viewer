@@ -106,3 +106,39 @@ def get_deploy_role(service_config: Dict[str, Any]) -> Optional[str]:
 def get_command(service_config: Dict[str, Any]) -> Optional[Union[str, list]]:
     """Get the command for a service."""
     return service_config.get("command")
+
+
+def normalize_command(command: Any) -> list[str]:
+    """
+    Normalizes a Compose command (string or list) into an ACI-compatible list of strings.
+    If the command is a string and contains shell-like syntax ($, >) it may be wrapped in sh -lc.
+    """
+    if not command:
+        return []
+    if isinstance(command, list):
+        return [str(c) for c in command]
+    
+    cmd_str = str(command).strip()
+    if not cmd_str:
+        return []
+
+    # If interpolation is detected or complex shell chars, wrap in sh -lc
+    # Actually, to avoid splitting issues with quotes/paths, we prefer wrapping ALL string commands.
+    return ["sh", "-lc", cmd_str]
+
+
+def detect_services_by_role(compose_config: Dict[str, Any]) -> Dict[str, list[str]]:
+    """
+    Returns a mapping of role -> [service_names] based on x-deploy-role.
+    """
+    services = compose_config.get("services", {})
+    role_map: Dict[str, list[str]] = {}
+    
+    for name, config in services.items():
+        role = get_deploy_role(config)
+        if role:
+            if role not in role_map:
+                role_map[role] = []
+            role_map[role].append(name)
+            
+    return role_map

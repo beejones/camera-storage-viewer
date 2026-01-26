@@ -65,6 +65,7 @@ class DeployPlan:
     app_port: int  # Principal application port
     app_ports: list[int] = field(default_factory=list) # Additional ports if any
     web_command: list[str] | None = None
+    extra_env: dict[str, str] = field(default_factory=dict)
     
     # Deployment Metadata
     service_mode: str = "app"  # e.g. "app", "sidecar", "worker"
