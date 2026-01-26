@@ -59,6 +59,10 @@ class VarsEnum(str, Enum):
     APP_CPU_CORES = "APP_CPU_CORES"
     APP_MEMORY_GB = "APP_MEMORY_GB"
 
+    # Customization Hooks
+    DEPLOY_HOOKS_MODULE = "DEPLOY_HOOKS_MODULE"
+    DEPLOY_HOOKS_SOFT_FAIL = "DEPLOY_HOOKS_SOFT_FAIL"
+
     # Caddy / Sidecar
     CADDY_IMAGE = "CADDY_IMAGE"
     CADDY_CPU_CORES = "CADDY_CPU_CORES"
@@ -395,6 +399,18 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         key=VarsEnum.OTHER_MEMORY_GB,
         mandatory=False,
         default="0.5",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.DEPLOY_HOOKS_MODULE,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.DEPLOY_HOOKS_SOFT_FAIL,
+        mandatory=False,
+        default="false",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(

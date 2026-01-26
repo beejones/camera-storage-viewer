@@ -102,3 +102,7 @@ def get_build_context(service_config: Dict[str, Any]) -> Optional[str]:
 def get_deploy_role(service_config: Dict[str, Any]) -> Optional[str]:
     """Get the x-deploy-role value (e.g. 'app', 'sidecar')."""
     return service_config.get("x-deploy-role")
+
+def get_command(service_config: Dict[str, Any]) -> Optional[Union[str, list]]:
+    """Get the command for a service."""
+    return service_config.get("command")

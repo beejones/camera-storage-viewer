@@ -229,6 +229,12 @@ Next steps are documented in [planning/camera-storage-viewer-plan.md](planning/c
 - timeline playback + downloads in a web UI
 - retention policy (e.g. delete recordings older than 30 days)
 
+## Deployment Customization
+
+Downstream consumers can customize the deployment process (e.g., override images, resources, or patch YAML) using **Deployment Hooks**. This prevents the need to maintain a fork with modified core scripts.
+
+See: [docs/deploy/HOOKS.md](docs/deploy/HOOKS.md)
+
 ## Migration Guide
 
 ### Renamed Variables (Jan 2026)
