@@ -50,6 +50,9 @@ class VarsEnum(str, Enum):
     PUBLIC_DOMAIN = "PUBLIC_DOMAIN"
     ACME_EMAIL = "ACME_EMAIL"
 
+    # Sidecar images
+    CADDY_IMAGE = "CADDY_IMAGE"
+
     # Image / registry
     CONTAINER_IMAGE = "CONTAINER_IMAGE"
     GHCR_PRIVATE = "GHCR_PRIVATE"
@@ -306,6 +309,12 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
     ),
     EnvKeySpec(
         key=VarsEnum.ACME_EMAIL,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.CADDY_IMAGE,
         mandatory=False,
         default=None,
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),

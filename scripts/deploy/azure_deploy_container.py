@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Deploy camera-storage-viewer to Azure Container Instances (ACI).
 
-Current model (FTP-only):
-- Single container group with an FTP server.
+Current model:
+- The 'full' deployment mode uses two container groups: one for web+caddy and one for FTP.
 - Runtime .env is stored as a Key Vault secret (default: 'env') and fetched at startup via Managed Identity.
 - A single Azure Files share is mounted at /data for durable storage.
 """
@@ -25,6 +25,8 @@ sys.path.append(str(Path(__file__).parent))
 
 import azure_deploy_container_helpers as deploy_helpers
 import azure_deploy_yaml_helpers as yaml_helpers
+
+from docker_compose_helpers import derive_defaults
 
 from env_schema import (
     DEPLOY_SCHEMA,
@@ -159,6 +161,7 @@ def generate_deploy_yaml_web(
     memory_gb: float,
     data_share_name: str,
     web_port: int = 80,
+    web_command: list[str] | None = None,
 ) -> str:
     """Generate ACI YAML for the viewer web service (web-only container group)."""
 
@@ -180,6 +183,7 @@ def generate_deploy_yaml_web(
         memory_gb=memory_gb,
         data_share_name=data_share_name,
         web_port=web_port,
+        web_command=web_command,
     )
 
 
@@ -201,10 +205,11 @@ def generate_deploy_yaml_web_caddy(
     cpu_cores: float,
     memory_gb: float,
     data_share_name: str,
-    public_domain: str,
+    public_domain: str | None,
     acme_email: str | None = None,
     caddy_image: str = "caddy:2",
     web_port: int = 8081,
+    web_command: list[str] | None = None,
 ) -> str:
     """Generate ACI YAML for the viewer web service behind Caddy (80/443)."""
 
@@ -229,6 +234,7 @@ def generate_deploy_yaml_web_caddy(
         acme_email=acme_email,
         caddy_image=caddy_image,
         web_port=web_port,
+        web_command=web_command,
     )
 
 
@@ -237,12 +243,14 @@ def main() -> None:
 
     parser.add_argument(
         "--service",
-        choices=["ftp", "web", "web-caddy"],
-        default="ftp",
+        choices=["ftp", "web", "web-caddy", "full"],
+        default="full",
         help=(
-            "Which service to deploy. 'ftp' deploys the FTP-only container group (default). "
+            "Which service to deploy. 'full' deploys both web-caddy (base name) and ftp (name suffixed with -ftp) as two container groups (default). "
+            "'ftp' deploys the FTP-only container group. "
             "'web' deploys a web-only container group that exposes a single HTTP port (typically 80). "
-            "'web-caddy' deploys web plus a Caddy sidecar exposing ports 80/443 for a custom domain."
+            "'web-caddy' deploys web plus a Caddy sidecar exposing ports 80/443 for a custom domain. "
+            "(See also: --ftp-container-name/--ftp-dns-label for naming.)"
         ),
     )
 
@@ -253,6 +261,49 @@ def main() -> None:
     parser.add_argument("--dns-label", default=None, help="DNS label for <label>.<location>.azurecontainer.io")
 
     parser.add_argument("--image", "-i", default=None, help="Container image URL")
+
+    parser.add_argument(
+        "--compose-file",
+        default=None,
+        help="Path to docker-compose.yml used as the source of truth for web/caddy defaults (optional)",
+    )
+
+    parser.add_argument(
+        "--caddy-image",
+        default=None,
+        help=(
+            "Override the Caddy image used for --service web-caddy/full. "
+            "You can also set CADDY_IMAGE in .env.deploy. "
+            "Useful if Docker Hub pulls (e.g. caddy:2) fail/rate-limit in ACI."
+        ),
+    )
+
+    parser.add_argument(
+        "--compose-app-service",
+        default=None,
+        help="Service name in docker-compose.yml for the web app (default: x-deploy-role=app or 'web')",
+    )
+    parser.add_argument(
+        "--compose-caddy-service",
+        default=None,
+        help="Service name in docker-compose.yml for the Caddy sidecar (default: x-deploy-role=sidecar or 'caddy')",
+    )
+    parser.add_argument(
+        "--compose-ftp-service",
+        default=None,
+        help="Service name in docker-compose.yml for the FTP service (default: x-deploy-role=ftp or 'ftp')",
+    )
+
+    parser.add_argument(
+        "--ftp-container-name",
+        default=None,
+        help="Only for --service full: container group name for FTP (default: <container-name>-ftp)",
+    )
+    parser.add_argument(
+        "--ftp-dns-label",
+        default=None,
+        help="Only for --service full: DNS label for FTP group (default: <dns-label>-ftp)",
+    )
 
     parser.add_argument("--storage-name", default=None)
     parser.add_argument("--identity-name", default=None)
@@ -812,34 +863,56 @@ def main() -> None:
     storage_key = get_storage_key(storage_name, rg)
     identity_id, identity_client_id, identity_tenant_id = get_identity_details(identity_name, rg)
 
-    # Recreate container group for identity/env updates.
-    # Delete existing container if any, then wait for Azure to fully clean up to prevent "Conflict" errors.
-    run_az_command(["container", "delete", "--resource-group", rg, "--name", name, "--yes"], capture_output=False, ignore_errors=True)
-    
-    # Wait for container to be fully deleted (not just deletion initiated)
-    print("⏳ [deploy] Waiting for previous container to be fully deleted...")
-    max_wait = 120  # seconds
-    poll_interval = 5
-    waited = 0
-    while waited < max_wait:
-        # Check if container still exists
-        result = run_az_command(
-            ["container", "show", "--resource-group", rg, "--name", name, "--query", "provisioningState", "-o", "tsv"],
-            capture_output=True,
+    service = str(args.service or "ftp").strip().lower()
+
+    def wait_for_container_group_deleted(*, container_name: str) -> None:
+        print(f"⏳ [deploy] Waiting for previous container '{container_name}' to be fully deleted...")
+        max_wait = 120  # seconds
+        poll_interval = 5
+        waited = 0
+        while waited < max_wait:
+            result = run_az_command(
+                [
+                    "container",
+                    "show",
+                    "--resource-group",
+                    rg,
+                    "--name",
+                    container_name,
+                    "--query",
+                    "provisioningState",
+                    "-o",
+                    "tsv",
+                ],
+                capture_output=True,
+                ignore_errors=True,
+                verbose=False,
+            )
+            if result is None:
+                print(f"✅ [deploy] Previous container '{container_name}' deleted after {waited}s")
+                return
+            state = str(result).strip().lower()
+            if state in ("deleting", "pending"):
+                print(f"⏳ [deploy] Container '{container_name}' still {state}... waiting")
+            time.sleep(poll_interval)
+            waited += poll_interval
+        print(f"⚠️  [deploy] Timed out waiting for '{container_name}' deletion after {max_wait}s, proceeding anyway...")
+
+    # Recreate container group(s) for identity/env updates.
+    # Delete existing container group(s) if any, then wait for Azure to fully clean up to prevent "Conflict" errors.
+    delete_names = [name]
+    if service == "full":
+        ftp_name = str(args.ftp_container_name or f"{name}-ftp").strip() or f"{name}-ftp"
+        if ftp_name != name:
+            delete_names.append(ftp_name)
+
+    for delete_name in delete_names:
+        run_az_command(
+            ["container", "delete", "--resource-group", rg, "--name", delete_name, "--yes"],
+            capture_output=False,
             ignore_errors=True,
-            verbose=False,
         )
-        if result is None:
-            # Container no longer exists
-            print(f"✅ [deploy] Previous container deleted after {waited}s")
-            break
-        state = str(result).strip().lower()
-        if state in ("deleting", "pending"):
-            print(f"⏳ [deploy] Container still {state}... waiting")
-        time.sleep(poll_interval)
-        waited += poll_interval
-    else:
-        print(f"⚠️  [deploy] Timed out waiting for container deletion after {max_wait}s, proceeding anyway...")
+        wait_for_container_group_deleted(container_name=delete_name)
 
     # FTP-only deployment: no sidecar images to prefetch.
 
@@ -854,11 +927,28 @@ def main() -> None:
         else (os.getenv(VarsEnum.DEFAULT_MEMORY_GB.value) or str(DEFAULT_MEMORY_GB))
     )
 
-    service = str(args.service or "ftp").strip().lower()
+    repo_root = Path(__file__).resolve().parents[2]
+    compose_path = Path(args.compose_file) if args.compose_file else (repo_root / "docker-compose.yml")
+    try:
+        compose_defaults = derive_defaults(
+            compose_path=compose_path,
+            compose_app_service=(str(args.compose_app_service).strip() or None) if args.compose_app_service else None,
+            compose_caddy_service=(str(args.compose_caddy_service).strip() or None) if args.compose_caddy_service else None,
+            compose_ftp_service=(str(args.compose_ftp_service).strip() or None) if args.compose_ftp_service else None,
+        )
+    except Exception as e:
+        compose_defaults = None
+        print(f"⚠️  [deploy] Could not load compose defaults from {compose_path}: {e}")
+
+    caddy_image_override = (
+        (str(args.caddy_image).strip() or None)
+        if getattr(args, "caddy_image", None)
+        else (str(os.getenv(VarsEnum.CADDY_IMAGE.value) or "").strip() or None)
+    )
 
     if service == "web":
         # Web-only container group: expose one port (default: 80).
-        web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "80").strip() or "80")
+        web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "").strip() or (str(compose_defaults.web_port) if compose_defaults and compose_defaults.web_port else "80"))
         try:
             yaml_text = generate_deploy_yaml_web(
                 name=name,
@@ -878,6 +968,7 @@ def main() -> None:
                 memory_gb=memory_gb,
                 data_share_name=data_share_name,
                 web_port=web_port,
+                web_command=(compose_defaults.web_command if compose_defaults else None),
             )
         except ValueError as e:
             raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
@@ -889,7 +980,7 @@ def main() -> None:
                 f"[deploy] {VarsEnum.PUBLIC_DOMAIN.value} is required for --service web-caddy (e.g. camera-storage-viewer.zenia.eu)"
             )
         acme_email = str(os.getenv(VarsEnum.ACME_EMAIL.value) or "").strip() or None
-        web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "8081").strip() or "8081")
+        web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "").strip() or (str(compose_defaults.web_port) if compose_defaults and compose_defaults.web_port else "8081"))
         try:
             yaml_text = generate_deploy_yaml_web_caddy(
                 name=name,
@@ -910,10 +1001,145 @@ def main() -> None:
                 data_share_name=data_share_name,
                 public_domain=public_domain,
                 acme_email=acme_email,
+                caddy_image=(
+                    caddy_image_override
+                    or (compose_defaults.caddy_image if compose_defaults and compose_defaults.caddy_image else None)
+                    or "caddy:2"
+                ),
                 web_port=web_port,
+                web_command=(compose_defaults.web_command if compose_defaults else None),
             )
         except ValueError as e:
             raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
+    elif service == "full":
+        # Full deploy: web-caddy (base group) + ftp (separate group due to ACI 5-port public limit).
+        public_domain = str(os.getenv(VarsEnum.PUBLIC_DOMAIN.value) or "").strip()
+        if not public_domain:
+            raise SystemExit(
+                f"[deploy] {VarsEnum.PUBLIC_DOMAIN.value} is required for --service full (e.g. camera-storage-viewer.zenia.eu)"
+            )
+
+        acme_email = str(os.getenv(VarsEnum.ACME_EMAIL.value) or "").strip() or None
+        web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "").strip() or (str(compose_defaults.web_port) if compose_defaults and compose_defaults.web_port else "8081"))
+
+        ftp_name = str(args.ftp_container_name or f"{name}-ftp").strip() or f"{name}-ftp"
+        ftp_dns_label = str(args.ftp_dns_label or f"{dns_label}-ftp").strip() or f"{dns_label}-ftp"
+
+        ftp_port = int(
+            (os.getenv(VarsEnum.FTP_PORT.value) or "").strip()
+            or (str(compose_defaults.ftp_port) if compose_defaults and compose_defaults.ftp_port else "21")
+        )
+        ftp_passive_port_min = int(
+            (os.getenv(VarsEnum.FTP_PASSIVE_PORT_MIN.value) or "").strip()
+            or (str(compose_defaults.ftp_passive_port_min) if compose_defaults and compose_defaults.ftp_passive_port_min else "50000")
+        )
+        ftp_passive_port_max = int(
+            (os.getenv(VarsEnum.FTP_PASSIVE_PORT_MAX.value) or "").strip()
+            or (str(compose_defaults.ftp_passive_port_max) if compose_defaults and compose_defaults.ftp_passive_port_max else "50003")
+        )
+
+        ports_unique = sorted(set([ftp_port] + list(range(ftp_passive_port_min, ftp_passive_port_max + 1))))
+        if len(ports_unique) > 5:
+            raise SystemExit(
+                "ACI supports at most 5 public ports per container group. "
+                f"Your FTP port config would expose {len(ports_unique)} ports. "
+                "Set FTP_PASSIVE_PORT_MAX so the passive range is <= 4 ports (e.g. 50000-50003), "
+                "or deploy to a platform that supports larger port ranges."
+            )
+
+        try:
+            yaml_text_web = generate_deploy_yaml_web_caddy(
+                name=name,
+                location=location,
+                image=image,
+                registry_server=registry_server,
+                registry_username=registry_username,
+                registry_password=registry_password,
+                identity_id=identity_id,
+                identity_client_id=identity_client_id,
+                identity_tenant_id=identity_tenant_id,
+                storage_name=storage_name,
+                storage_key=storage_key,
+                kv_name=kv_name,
+                dns_label=dns_label,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                data_share_name=data_share_name,
+                public_domain=public_domain,
+                acme_email=acme_email,
+                caddy_image=(
+                    caddy_image_override
+                    or (compose_defaults.caddy_image if compose_defaults and compose_defaults.caddy_image else None)
+                    or "caddy:2"
+                ),
+                web_port=web_port,
+                web_command=(compose_defaults.web_command if compose_defaults else None),
+            )
+            yaml_text_ftp = generate_deploy_yaml(
+                name=ftp_name,
+                location=location,
+                image=image,
+                registry_server=registry_server,
+                registry_username=registry_username,
+                registry_password=registry_password,
+                identity_id=identity_id,
+                identity_client_id=identity_client_id,
+                identity_tenant_id=identity_tenant_id,
+                storage_name=storage_name,
+                storage_key=storage_key,
+                kv_name=kv_name,
+                dns_label=ftp_dns_label,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                data_share_name=data_share_name,
+                ftp_port=ftp_port,
+                ftp_passive_port_min=ftp_passive_port_min,
+                ftp_passive_port_max=ftp_passive_port_max,
+            )
+        except ValueError as e:
+            raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
+
+        def create_from_yaml_text(*, yaml_text: str) -> None:
+            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+                f.write(yaml_text)
+                yaml_path = f.name
+
+            print(f"📝 [deploy] wrote: {yaml_path}")
+
+            max_retries = 5
+            base_delay = 10.0  # seconds
+            for attempt in range(1, max_retries + 1):
+                try:
+                    run_az_command(["container", "create", "--resource-group", rg, "--file", yaml_path], capture_output=False)
+                    return
+                except subprocess.CalledProcessError as e:
+                    err = getattr(e, "stderr", "") or ""
+                    is_transient = "RegistryErrorResponse" in err or "Conflict" in err
+                    if is_transient and attempt < max_retries:
+                        sleep_time = min(60.0, base_delay * (2 ** (attempt - 1)))
+                        if "index.docker.io" in err or "docker.io" in err:
+                            print(
+                                "⚠️  [deploy] Registry error pulling from Docker Hub (attempt "
+                                f"{attempt}/{max_retries}). Retrying in {sleep_time:.0f}s...\n"
+                                "    Hint: set CADDY_IMAGE (or --caddy-image) to a non-Docker-Hub image to avoid rate limits."
+                            )
+                        else:
+                            print(
+                                f"⚠️  [deploy] Registry/ACI transient error (attempt {attempt}/{max_retries}). Retrying in {sleep_time:.0f}s..."
+                            )
+                        time.sleep(sleep_time)
+                    else:
+                        raise
+
+        create_from_yaml_text(yaml_text=yaml_text_web)
+        create_from_yaml_text(yaml_text=yaml_text_ftp)
+
+        print("\n[done] Deployed.")
+        print(f"  Web FQDN: {dns_label}.{location}.azurecontainer.io")
+        print(f"  Web URL:  https://{public_domain}")
+        print(f"  FTP FQDN: {ftp_dns_label}.{location}.azurecontainer.io")
+        print(f"  FTP URL:  ftp://{ftp_dns_label}.{location}.azurecontainer.io:{ftp_port}")
+        return
     else:
         ftp_port = int((os.getenv(VarsEnum.FTP_PORT.value) or "21").strip() or "21")
         ftp_passive_port_min = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MIN.value) or "50000").strip() or "50000")
@@ -977,7 +1203,14 @@ def main() -> None:
             is_transient = "RegistryErrorResponse" in err or "Conflict" in err
             if is_transient and attempt < max_retries:
                 sleep_time = min(60.0, base_delay * (2 ** (attempt - 1)))
-                print(f"⚠️  [deploy] Registry conflict (attempt {attempt}/{max_retries}). Retrying in {sleep_time:.0f}s...")
+                if "index.docker.io" in err or "docker.io" in err:
+                    print(
+                        "⚠️  [deploy] Registry error pulling from Docker Hub (attempt "
+                        f"{attempt}/{max_retries}). Retrying in {sleep_time:.0f}s...\n"
+                        "    Hint: set CADDY_IMAGE (or --caddy-image) to a non-Docker-Hub image to avoid rate limits."
+                    )
+                else:
+                    print(f"⚠️  [deploy] Registry/ACI transient error (attempt {attempt}/{max_retries}). Retrying in {sleep_time:.0f}s...")
                 time.sleep(sleep_time)
             else:
                 # Not a transient error or out of retries

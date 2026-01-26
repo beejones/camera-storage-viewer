@@ -2,6 +2,49 @@
 
 This repo is evolving into an Azure-hosted camera recorder + viewer.
 
+## Upstream (Project Origin)
+
+This repository started as a clone/fork of:
+- https://github.com/beejones/protected-azure-container
+
+It keeps the same overall deployment approach (Azure Container Instances + a small TLS proxy sidecar), but adapts it to the camera FTP ingest + viewer use-case.
+
+### How to pull updates from upstream
+
+1) Add an `upstream` remote (one-time):
+
+```bash
+git remote add upstream https://github.com/beejones/protected-azure-container.git
+git remote -v
+```
+
+2) Fetch upstream branches/tags:
+
+```bash
+git fetch upstream --prune
+```
+
+3) Update your current branch.
+
+Option A: merge upstream `main` into your current branch (preserves history):
+
+```bash
+git merge upstream/main
+```
+
+Option B: rebase your work on top of upstream `main` (cleaner linear history, but rewrites commits):
+
+```bash
+git rebase upstream/main
+```
+
+4) Resolve any conflicts, run tests, and push your branch:
+
+```bash
+python -m pytest
+git push
+```
+
 Prototype (this step): an **FTP server** you can point one or more cameras at (starting with Reolink), so we can validate uploads and networking (PASV, port ranges) end-to-end.
 
 ## Quick Start (Local FTP Prototype)
@@ -29,6 +72,8 @@ This starts:
 
 Optional (recommended for a nicer local URL):
 - the Caddy reverse proxy (`caddy`) on `http://localhost/` (port 80)
+
+Note: The repo builds a single app image (FTP + viewer). docker-compose runs different commands for `ftp` vs `web`.
 
 If you only want FTP:
 

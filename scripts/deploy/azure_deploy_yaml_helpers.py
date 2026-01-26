@@ -172,6 +172,7 @@ def generate_deploy_yaml_web(
     memory_gb: float,
     data_share_name: str,
     web_port: int = 80,
+    web_command: list[str] | None = None,
 ) -> str:
     """Generate an ACI deployment YAML for the viewer web API/UI.
 
@@ -218,6 +219,14 @@ def generate_deploy_yaml_web(
         indent(4, f"- name: {name}"),
         indent(6, "properties:"),
         indent(8, f"image: {image}"),
+    ]
+
+    if web_command:
+        lines.append(indent(8, "command:"))
+        for part in web_command:
+            lines.append(indent(10, f"- '{part}'"))
+
+    lines += [
         indent(8, "ports:"),
         indent(10, f"- port: {web_port}"),
         indent(12, "protocol: TCP"),
@@ -288,10 +297,11 @@ def generate_deploy_yaml_web_caddy(
     cpu_cores: float,
     memory_gb: float,
     data_share_name: str,
-    public_domain: str,
+    public_domain: str | None,
     acme_email: str | None = None,
     caddy_image: str = "caddy:2",
     web_port: int = 8081,
+    web_command: list[str] | None = None,
 ) -> str:
     """Generate an ACI deployment YAML for the viewer web API/UI behind Caddy.
 
@@ -307,8 +317,7 @@ def generate_deploy_yaml_web_caddy(
     def indent(level: int, text: str) -> str:
         return " " * level + text
 
-    if not str(public_domain or "").strip():
-        raise ValueError("public_domain is required for web+caddy")
+    public_domain = str(public_domain or "").strip() or None
     if web_port < 1 or web_port > 65535:
         raise ValueError(f"web_port must be 1-65535, got {web_port}")
 
@@ -329,11 +338,15 @@ def generate_deploy_yaml_web_caddy(
         f"\treverse_proxy 127.0.0.1:{web_port}",
         "}",
         "",
-        f"{str(public_domain).strip()} {{",
-        f"\treverse_proxy 127.0.0.1:{web_port}",
-        "}",
-        "",
     ]
+
+    if public_domain:
+        caddyfile += [
+            f"{public_domain} {{",
+            f"\treverse_proxy 127.0.0.1:{web_port}",
+            "}",
+            "",
+        ]
     caddyfile_text = "\n".join(caddyfile)
     caddyfile_b64 = base64.b64encode(caddyfile_text.encode("utf-8")).decode("ascii")
     caddy_cmd = (
@@ -372,6 +385,14 @@ def generate_deploy_yaml_web_caddy(
         indent(4, f"- name: {name}-web"),
         indent(6, "properties:"),
         indent(8, f"image: {image}"),
+    ]
+
+    if web_command:
+        lines.append(indent(8, "command:"))
+        for part in web_command:
+            lines.append(indent(10, f"- '{part}'"))
+
+    lines += [
         indent(8, "ports:"),
         indent(10, f"- port: {web_port}"),
         indent(12, "protocol: TCP"),
@@ -409,8 +430,15 @@ def generate_deploy_yaml_web_caddy(
         indent(8, "ports:"),
         indent(10, "- port: 80"),
         indent(12, "protocol: TCP"),
-        indent(10, "- port: 443"),
-        indent(12, "protocol: TCP"),
+    ]
+
+    if public_domain:
+        lines += [
+            indent(10, "- port: 443"),
+            indent(12, "protocol: TCP"),
+        ]
+
+    lines += [
         indent(8, "command:"),
         indent(10, "- sh"),
         indent(10, "- -lc"),
@@ -430,7 +458,12 @@ def generate_deploy_yaml_web_caddy(
         indent(4, f"dnsNameLabel: {dns_label}"),
         indent(4, "ports:"),
         indent(6, "- port: 80"),
-        indent(6, "- port: 443"),
+    ]
+
+    if public_domain:
+        lines.append(indent(6, "- port: 443"))
+
+    lines += [
         "",
         indent(2, "volumes:"),
         indent(4, "- name: data-volume"),
