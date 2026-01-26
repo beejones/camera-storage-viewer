@@ -266,6 +266,7 @@ jobs:
       continue-on-error: true
       run: |
         set -euo pipefail
+        # Note: viewer-specific deploy hooks auto-load from scripts/deploy/deploy_customizations.py.
         # Use --no-interactive to ensure no prompts
         # Use --no-set-vars-secrets because we are already running in Actions
         # Use --no-publish because we already built and pushed above

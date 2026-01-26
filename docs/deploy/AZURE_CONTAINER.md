@@ -109,13 +109,23 @@ Triggers on: **Workflow Dispatch** (Manual)
 2. **Secrets** (Environment or Repo):
    - `RUNTIME_ENV_DOTENV`: The **full content** of `.env` (excluding comments is fine).
 3. **Variables** (Environment or Repo):
+  - `AZURE_OIDC_APP_NAME` (Azure AD App Registration display name for OIDC)
    - `AZURE_CLIENT_ID` (OIDC App ID)
    - `AZURE_TENANT_ID`
    - `AZURE_SUBSCRIPTION_ID`
    - `AZURE_RESOURCE_GROUP` (e.g. `camera-storage-viewer-rg`)
    - `AZURE_CONTAINER_NAME` (e.g. `camera-storage-viewer`)
 
-The workflow builds/pushes `ghcr.io/<owner>/<repo>:latest` and then runs `scripts/deploy/azure_deploy_container.py`.
+The workflow builds/pushes `ghcr.io/<owner>/<repo>:latest` and then runs `scripts/deploy/csv_deploy_container.py`.
+
+### Deploy Customizations (Hooks)
+
+This repo supports a hooks-based customization system for viewer-specific deploy behavior.
+
+- Default hooks module: `scripts/deploy/deploy_customizations.py`
+- Override in CI by editing the deploy command to include:
+  - `--hooks-module <module-or-path>`
+  - `--hooks-soft-fail` (optional)
 
 ### Resetting GitHub Secrets
 

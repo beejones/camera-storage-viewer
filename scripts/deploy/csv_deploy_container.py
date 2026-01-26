@@ -25,6 +25,7 @@ sys.path.append(str(Path(__file__).parent))
 
 import azure_deploy_container_helpers as deploy_helpers
 import csv_deploy_yaml_helpers as yaml_helpers
+import deploy_hooks
 
 from csv_compose_helpers import derive_defaults
 
@@ -37,6 +38,7 @@ from env_schema import (
     VarsEnum,
     apply_defaults,
     get_spec,
+    normalize_legacy_deploy_keys,
     parse_dotenv_file,
     validate_cross_field_rules,
     validate_known_keys,
@@ -297,6 +299,17 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--hooks-module",
+        default=None,
+        help="Python module path for deployment customization hooks (default: scripts/deploy/deploy_customizations.py)",
+    )
+    parser.add_argument(
+        "--hooks-soft-fail",
+        action="store_true",
+        help="Do not abort deployment if a hook fails (default: fail on error)",
+    )
+
+    parser.add_argument(
         "--ftp-container-name",
         default=None,
         help="Only for --service full: container group name for FTP (default: <container-name>-ftp)",
@@ -454,15 +467,25 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # scripts/deploy/csv_deploy_container.py -> repo root is 2 parents up.
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    # Initialize hooks early so they can inject defaults before validation.
+    hooks = deploy_hooks.load_hooks(repo_root, args.hooks_module, soft_fail=args.hooks_soft_fail)
+    ctx = deploy_hooks.DeployContext(repo_root=repo_root, env=os.environ, args=args)
+
+    # Hook: pre_validate_env
+    hooks.call("pre_validate_env", ctx)
+    os.environ.update(ctx.env)
+
     if not az_logged_in():
         raise SystemExit("Not logged into Azure. Run: az login")
 
     # Allow --azure-oidc-app-name to satisfy schema validation by surfacing it as an env var.
     if args.azure_oidc_app_name and str(args.azure_oidc_app_name).strip():
         os.environ[VarsEnum.AZURE_OIDC_APP_NAME.value] = str(args.azure_oidc_app_name).strip()
-
-    # scripts/deploy/azure_deploy_container.py -> repo root is 2 parents up.
-    repo_root = Path(__file__).resolve().parents[2]
 
     interactive = is_interactive() if args.interactive is None else bool(args.interactive)
     # Key Vault is used at *runtime* by the container to fetch the full .env secret.
@@ -485,6 +508,9 @@ def main() -> None:
 
         if deploy_env_path.exists():
             deploy_kv_file = parse_dotenv_file(deploy_env_path)
+            deploy_kv_file, legacy_warnings = normalize_legacy_deploy_keys(deploy_kv_file)
+            for w in legacy_warnings:
+                print(f"⚠️  [env] {w}", file=sys.stderr)
             validate_known_keys(DEPLOY_SCHEMA, deploy_kv_file, context=f"deploy ({deploy_env_path.name})")
     except EnvValidationError as e:
         print(e.format(), file=sys.stderr)
@@ -516,6 +542,7 @@ def main() -> None:
                 validate_required(RUNTIME_SCHEMA, runtime_kv, context=f"runtime ({runtime_env_path.name})")
 
             deploy_kv_file = parse_dotenv_file(deploy_env_path) if deploy_env_path.exists() else {}
+            deploy_kv_file, _legacy_warnings = normalize_legacy_deploy_keys(deploy_kv_file)
             deploy_schema_keys = {spec.key.value for spec in DEPLOY_SCHEMA}
             deploy_kv_env = {k: v for k, v in os.environ.items() if k in deploy_schema_keys and str(v).strip()}
             deploy_kv = dict(deploy_kv_file)
@@ -528,6 +555,10 @@ def main() -> None:
             deploy_dotenv_specs = [spec for spec in DEPLOY_SCHEMA if EnvTarget.DOTENV_DEPLOY in spec.targets]
             validate_required(deploy_dotenv_specs, deploy_kv, context=f"deploy ({deploy_env_path.name} + env)")
             validate_cross_field_rules(deploy_kv=deploy_kv, context=f"deploy ({deploy_env_path.name} + env)")
+
+            # Hook: post_validate_env
+            ctx.env = dict(os.environ)
+            hooks.call("post_validate_env", ctx)
         except EnvValidationError as e:
             print(e.format(), file=sys.stderr)
             raise SystemExit(2)

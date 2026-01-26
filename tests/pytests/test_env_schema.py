@@ -11,6 +11,7 @@ from scripts.deploy.env_schema import (
     SecretsEnum,
     VarsEnum,
     apply_defaults,
+    normalize_legacy_deploy_keys,
     parse_dotenv_file,
     truthy,
     validate_cross_field_rules,
@@ -57,6 +58,26 @@ def test_alias_keys_fail(tmp_path: Path) -> None:
     kv = parse_dotenv_file(p)
     with pytest.raises(EnvValidationError):
         validate_known_keys(DEPLOY_SCHEMA, kv, context="deploy")
+
+
+def test_legacy_deploy_keys_normalize(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path / ".env.deploy",
+        "CONTAINER_IMAGE=ghcr.io/x/y:latest\nDEFAULT_CPU_CORES=1.0\nDEFAULT_MEMORY_GB=2.0\n",
+    )
+    kv = parse_dotenv_file(p)
+    normalized, warnings = normalize_legacy_deploy_keys(kv)
+
+    assert warnings
+    assert VarsEnum.APP_IMAGE.value in normalized
+    assert VarsEnum.APP_CPU_CORES.value in normalized
+    assert VarsEnum.APP_MEMORY_GB.value in normalized
+    assert "CONTAINER_IMAGE" not in normalized
+    assert "DEFAULT_CPU_CORES" not in normalized
+    assert "DEFAULT_MEMORY_GB" not in normalized
+
+    # Should now validate cleanly against the strict schema.
+    validate_known_keys(DEPLOY_SCHEMA, normalized, context="deploy")
 
 
 def test_truthy() -> None:

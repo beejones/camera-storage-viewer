@@ -456,6 +456,42 @@ def parse_dotenv_file(path: Path) -> dict[str, str]:
     return kv
 
 
+def normalize_legacy_deploy_keys(kv: Mapping[str, str]) -> tuple[dict[str, str], list[str]]:
+    """Normalize legacy deploy keys to current schema keys.
+
+    This keeps schema validation strict (unknown keys still fail), while allowing
+    deploy entrypoints to accept a small set of historical keys found in older
+    `.env.deploy` files.
+
+    Returns: (normalized_kv, warnings)
+    """
+
+    legacy_map = {
+        # Older deploy scripts used these names.
+        "CONTAINER_IMAGE": VarsEnum.APP_IMAGE.value,
+        "DEFAULT_CPU_CORES": VarsEnum.APP_CPU_CORES.value,
+        "DEFAULT_MEMORY_GB": VarsEnum.APP_MEMORY_GB.value,
+    }
+
+    out = dict(kv)
+    warnings: list[str] = []
+
+    for old_key, new_key in legacy_map.items():
+        if old_key not in out:
+            continue
+
+        old_val = str(out.get(old_key) or "").strip()
+        new_val = str(out.get(new_key) or "").strip()
+
+        if old_val and not new_val:
+            out[new_key] = old_val
+
+        warnings.append(f"Legacy key '{old_key}' is deprecated; use '{new_key}'")
+        out.pop(old_key, None)
+
+    return out, warnings
+
+
 def _format_dotenv_value(value: str) -> str:
     # Keep it simple and deterministic; the values we write back (GUIDs) are safe unquoted.
     # If needed in the future, add quoting/escaping here.
