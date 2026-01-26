@@ -200,12 +200,14 @@ jobs:
         password: ${{ secrets.GHCR_TOKEN }}
 
     - name: Create .env from secret
+      env:
+        RUNTIME_ENV_DOTENV: ${{ secrets.RUNTIME_ENV_DOTENV }}
       run: |
-        if [ -z "${{ secrets.RUNTIME_ENV_DOTENV }}" ]; then
+        if [ -z "$RUNTIME_ENV_DOTENV" ]; then
           echo "::error::Secret RUNTIME_ENV_DOTENV is missing!"
           exit 1
         fi
-        echo "${{ secrets.RUNTIME_ENV_DOTENV }}" > .env
+        printf "%s" "$RUNTIME_ENV_DOTENV" > .env
         chmod 600 .env
 
     - name: Build and Push Docker Image
@@ -243,7 +245,10 @@ jobs:
           echo "AZURE_LOCATION=${{ inputs.location }}"
           echo "AZURE_CONTAINER_NAME=${{ vars.AZURE_CONTAINER_NAME || 'camera-storage-viewer' }}"
           echo ""
-          echo "CONTAINER_IMAGE=ghcr.io/${{ github.repository }}:latest"
+          echo "APP_IMAGE=ghcr.io/${{ github.repository }}:latest"
+          echo "CADDY_IMAGE=${{ vars.CADDY_IMAGE || 'caddy:2-alpine' }}"
+          echo "PUBLIC_DOMAIN=${{ vars.PUBLIC_DOMAIN || '' }}"
+          echo "ACME_EMAIL=${{ vars.ACME_EMAIL || '' }}"
           echo ""
           echo "GHCR_PRIVATE=true"
           echo "GHCR_USERNAME=${{ vars.GHCR_USERNAME || github.actor }}"
@@ -264,10 +269,12 @@ jobs:
         # Use --no-interactive to ensure no prompts
         # Use --no-set-vars-secrets because we are already running in Actions
         # Use --no-publish because we already built and pushed above
-        python scripts/deploy/azure_deploy_container.py \
+        python scripts/deploy/csv_deploy_container.py \
+          --service full \
           --no-interactive \
           --no-set-vars-secrets \
           --no-publish \
+          --no-prefetch-images \
           --upload-env \
           --env-file .env.deploy \
           2>&1 | tee deploy.log

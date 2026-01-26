@@ -50,17 +50,24 @@ class VarsEnum(str, Enum):
     PUBLIC_DOMAIN = "PUBLIC_DOMAIN"
     ACME_EMAIL = "ACME_EMAIL"
 
-    # Sidecar images
-    CADDY_IMAGE = "CADDY_IMAGE"
-
     # Image / registry
-    CONTAINER_IMAGE = "CONTAINER_IMAGE"
+    APP_IMAGE = "APP_IMAGE"
     GHCR_PRIVATE = "GHCR_PRIVATE"
     GHCR_USERNAME = "GHCR_USERNAME"
 
     # Defaults / sizing
-    DEFAULT_CPU_CORES = "DEFAULT_CPU_CORES"
-    DEFAULT_MEMORY_GB = "DEFAULT_MEMORY_GB"
+    APP_CPU_CORES = "APP_CPU_CORES"
+    APP_MEMORY_GB = "APP_MEMORY_GB"
+
+    # Caddy / Sidecar
+    CADDY_IMAGE = "CADDY_IMAGE"
+    CADDY_CPU_CORES = "CADDY_CPU_CORES"
+    CADDY_MEMORY_GB = "CADDY_MEMORY_GB"
+
+    # Other / Extra
+    OTHER_IMAGE = "OTHER_IMAGE"
+    OTHER_CPU_CORES = "OTHER_CPU_CORES"
+    OTHER_MEMORY_GB = "OTHER_MEMORY_GB"
 
     # Runtime
     BASIC_AUTH_USER = "BASIC_AUTH_USER"
@@ -320,7 +327,7 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(
-        key=VarsEnum.CONTAINER_IMAGE,
+        key=VarsEnum.APP_IMAGE,
         mandatory=True,
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
@@ -343,15 +350,51 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_SECRET}),
     ),
     EnvKeySpec(
-        key=VarsEnum.DEFAULT_CPU_CORES,
+        key=VarsEnum.APP_CPU_CORES,
         mandatory=False,
         default="1.0",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(
-        key=VarsEnum.DEFAULT_MEMORY_GB,
+        key=VarsEnum.APP_MEMORY_GB,
         mandatory=False,
         default="2.0",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.CADDY_IMAGE,
+        mandatory=False,
+        default="caddy:2-alpine",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.CADDY_CPU_CORES,
+        mandatory=False,
+        default="0.5",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.CADDY_MEMORY_GB,
+        mandatory=False,
+        default="0.5",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.OTHER_IMAGE,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.OTHER_CPU_CORES,
+        mandatory=False,
+        default="0.25",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.OTHER_MEMORY_GB,
+        mandatory=False,
+        default="0.5",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(

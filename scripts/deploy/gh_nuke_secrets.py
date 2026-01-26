@@ -108,7 +108,7 @@ def main():
 
     # 2. Environment Level
     # List environments first
-    envs_json = _run(["gh", "api", f"repos/{repo}/environments", "--jq", ".[].name"], ignore_errors=True)
+    envs_json = _run(["gh", "api", f"repos/{repo}/environments", "--jq", ".environments[].name"], ignore_errors=True)
     envs = [e for e in envs_json.splitlines() if e.strip()]
 
     print(f"\nFound {len(repo_secrets)} secrets, {len(repo_vars)} vars in repo.")

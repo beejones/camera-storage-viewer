@@ -1,4 +1,4 @@
-from scripts.deploy.azure_deploy_container import generate_deploy_yaml_web_caddy
+from scripts.deploy.csv_deploy_yaml_helpers import generate_deploy_yaml_web_caddy
 
 
 def test_generate_deploy_yaml_web_caddy_structure():

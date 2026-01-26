@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
-"""Deploy protected-azure-container to Azure Container Instances (ACI).
+"""Deploy camera-storage-viewer to Azure Container Instances (ACI).
 
-Model:
-- Multi-container group:
-  - protected-azure-container app (code-server)
-  - Caddy TLS proxy (HTTPS + reverse proxy; Basic Auth)
-- Secrets:
-  - Full .env is stored as a Key Vault secret (default: 'env')
-  - App container fetches env at startup via Managed Identity
-  - Basic Auth is configured via ACI secure env vars (recommended)
-
-Notes:
-- Exposes only 80/443 publicly. code-server is behind Caddy at https://<domain>/
-- All access is protected by Basic Auth
+Current model:
+- The 'full' deployment mode uses two container groups: one for web+caddy and one for FTP.
+- Runtime .env is stored as a Key Vault secret (default: 'env') and fetched at startup via Managed Identity.
+- A single Azure Files share is mounted at /data for durable storage.
 """
 
 from __future__ import annotations
@@ -32,8 +24,9 @@ from dotenv import load_dotenv
 sys.path.append(str(Path(__file__).parent))
 
 import azure_deploy_container_helpers as deploy_helpers
-import azure_deploy_yaml_helpers as yaml_helpers
-import docker_compose_helpers as compose_helpers
+import csv_deploy_yaml_helpers as yaml_helpers
+
+from csv_compose_helpers import derive_defaults
 
 from env_schema import (
     DEPLOY_SCHEMA,
@@ -58,8 +51,10 @@ except ImportError:
     from azure_utils import kv_data_plane_available, kv_secret_set_quiet, run_az_command
 
 
-DEFAULT_CPU_CORES = float(get_spec(DEPLOY_SCHEMA, VarsEnum.APP_CPU_CORES).default or "1.0")
-DEFAULT_MEMORY_GB = float(get_spec(DEPLOY_SCHEMA, VarsEnum.APP_MEMORY_GB).default or "2.0")
+DEFAULT_APP_CPU_CORES = float(get_spec(DEPLOY_SCHEMA, VarsEnum.APP_CPU_CORES).default or "1.0")
+DEFAULT_APP_MEMORY_GB = float(get_spec(DEPLOY_SCHEMA, VarsEnum.APP_MEMORY_GB).default or "2.0")
+DEFAULT_CADDY_CPU_CORES = float(get_spec(DEPLOY_SCHEMA, VarsEnum.CADDY_CPU_CORES).default or "0.5")
+DEFAULT_CADDY_MEMORY_GB = float(get_spec(DEPLOY_SCHEMA, VarsEnum.CADDY_MEMORY_GB).default or "0.5")
 
 
 # Keep helper wiring centralized here; `main()` continues to use the historic names.
@@ -117,22 +112,12 @@ def generate_deploy_yaml(
     storage_key: str,
     kv_name: str,
     dns_label: str,
-    public_domain: str,
-    acme_email: str,
-    basic_auth_user: str,
-    basic_auth_hash: str,
-    app_cpu_cores: float,
-    app_memory_gb: float,
-    share_workspace: str,
-    caddy_data_share_name: str,
-    caddy_config_share_name: str,
-    caddy_image: str,
-    caddy_cpu_cores: float,
-    caddy_memory_gb: float,
-    app_port: int,
-    other_image: str | None = None,
-    other_cpu_cores: float = 0.5,
-    other_memory_gb: float = 0.5,
+    cpu_cores: float,
+    memory_gb: float,
+    data_share_name: str,
+    ftp_port: int = 21,
+    ftp_passive_port_min: int = 50000,
+    ftp_passive_port_max: int = 50003,
 ) -> str:
     """Back-compat re-export for tests and external callers."""
 
@@ -150,27 +135,126 @@ def generate_deploy_yaml(
         storage_key=storage_key,
         kv_name=kv_name,
         dns_label=dns_label,
+        cpu_cores=cpu_cores,
+        memory_gb=memory_gb,
+        data_share_name=data_share_name,
+        ftp_port=ftp_port,
+        ftp_passive_port_min=ftp_passive_port_min,
+        ftp_passive_port_max=ftp_passive_port_max,
+    )
+
+
+def generate_deploy_yaml_web(
+    *,
+    name: str,
+    location: str,
+    image: str,
+    registry_server: str | None,
+    registry_username: str | None,
+    registry_password: str | None,
+    identity_id: str,
+    identity_client_id: str | None,
+    identity_tenant_id: str | None,
+    storage_name: str,
+    storage_key: str,
+    kv_name: str,
+    dns_label: str,
+    cpu_cores: float,
+    memory_gb: float,
+    data_share_name: str,
+    web_port: int = 80,
+    web_command: list[str] | None = None,
+) -> str:
+    """Generate ACI YAML for the viewer web service (web-only container group)."""
+
+    return yaml_helpers.generate_deploy_yaml_web(
+        name=name,
+        location=location,
+        image=image,
+        registry_server=registry_server,
+        registry_username=registry_username,
+        registry_password=registry_password,
+        identity_id=identity_id,
+        identity_client_id=identity_client_id,
+        identity_tenant_id=identity_tenant_id,
+        storage_name=storage_name,
+        storage_key=storage_key,
+        kv_name=kv_name,
+        dns_label=dns_label,
+        cpu_cores=cpu_cores,
+        memory_gb=memory_gb,
+        data_share_name=data_share_name,
+        web_port=web_port,
+        web_command=web_command,
+    )
+
+
+def generate_deploy_yaml_web_caddy(
+    *,
+    name: str,
+    location: str,
+    image: str,
+    registry_server: str | None,
+    registry_username: str | None,
+    registry_password: str | None,
+    identity_id: str,
+    identity_client_id: str | None,
+    identity_tenant_id: str | None,
+    storage_name: str,
+    storage_key: str,
+    kv_name: str,
+    dns_label: str,
+    cpu_cores: float,
+    memory_gb: float,
+    data_share_name: str,
+    public_domain: str | None,
+    acme_email: str | None = None,
+    caddy_image: str = "caddy:2",
+    web_port: int = 8081,
+    web_command: list[str] | None = None,
+) -> str:
+    """Generate ACI YAML for the viewer web service behind Caddy (80/443)."""
+
+    return yaml_helpers.generate_deploy_yaml_web_caddy(
+        name=name,
+        location=location,
+        image=image,
+        registry_server=registry_server,
+        registry_username=registry_username,
+        registry_password=registry_password,
+        identity_id=identity_id,
+        identity_client_id=identity_client_id,
+        identity_tenant_id=identity_tenant_id,
+        storage_name=storage_name,
+        storage_key=storage_key,
+        kv_name=kv_name,
+        dns_label=dns_label,
+        cpu_cores=cpu_cores,
+        memory_gb=memory_gb,
+        data_share_name=data_share_name,
         public_domain=public_domain,
         acme_email=acme_email,
-        basic_auth_user=basic_auth_user,
-        basic_auth_hash=basic_auth_hash,
-        app_cpu_cores=app_cpu_cores,
-        app_memory_gb=app_memory_gb,
-        share_workspace=share_workspace,
-        caddy_data_share_name=caddy_data_share_name,
-        caddy_config_share_name=caddy_config_share_name,
         caddy_image=caddy_image,
-        caddy_cpu_cores=caddy_cpu_cores,
-        caddy_memory_gb=caddy_memory_gb,
-        app_port=app_port,
-        other_image=other_image,
-        other_cpu_cores=other_cpu_cores,
-        other_memory_gb=other_memory_gb,
+        web_port=web_port,
+        web_command=web_command,
     )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Deploy protected-azure-container to Azure Container Instances")
+    parser = argparse.ArgumentParser(description="Deploy camera-storage-viewer to Azure Container Instances")
+
+    parser.add_argument(
+        "--service",
+        choices=["ftp", "web", "web-caddy", "full"],
+        default="full",
+        help=(
+            "Which service to deploy. 'full' deploys both web-caddy (base name) and ftp (name suffixed with -ftp) as two container groups (default). "
+            "'ftp' deploys the FTP-only container group. "
+            "'web' deploys a web-only container group that exposes a single HTTP port (typically 80). "
+            "'web-caddy' deploys web plus a Caddy sidecar exposing ports 80/443 for a custom domain. "
+            "(See also: --ftp-container-name/--ftp-dns-label for naming.)"
+        ),
+    )
 
     # These can come from --env-file (recommended) so they are not required.
     parser.add_argument("--resource-group", "-g", required=False, default=None)
@@ -180,34 +264,60 @@ def main() -> None:
 
     parser.add_argument("--image", "-i", default=None, help="Container image URL")
 
+    parser.add_argument(
+        "--compose-file",
+        default=None,
+        help="Path to docker-compose.yml used as the source of truth for web/caddy defaults (optional)",
+    )
+
+    parser.add_argument(
+        "--caddy-image",
+        default=None,
+        help=(
+            "Override the Caddy image used for --service web-caddy/full. "
+            "You can also set CADDY_IMAGE in .env.deploy. "
+            "Useful if Docker Hub pulls (e.g. caddy:2) fail/rate-limit in ACI."
+        ),
+    )
+
+    parser.add_argument(
+        "--compose-app-service",
+        default=None,
+        help="Service name in docker-compose.yml for the web app (default: x-deploy-role=app or 'web')",
+    )
+    parser.add_argument(
+        "--compose-caddy-service",
+        default=None,
+        help="Service name in docker-compose.yml for the Caddy sidecar (default: x-deploy-role=sidecar or 'caddy')",
+    )
+    parser.add_argument(
+        "--compose-ftp-service",
+        default=None,
+        help="Service name in docker-compose.yml for the FTP service (default: x-deploy-role=ftp or 'ftp')",
+    )
+
+    parser.add_argument(
+        "--ftp-container-name",
+        default=None,
+        help="Only for --service full: container group name for FTP (default: <container-name>-ftp)",
+    )
+    parser.add_argument(
+        "--ftp-dns-label",
+        default=None,
+        help="Only for --service full: DNS label for FTP group (default: <dns-label>-ftp)",
+    )
+
     parser.add_argument("--storage-name", default=None)
     parser.add_argument("--identity-name", default=None)
     parser.add_argument("--keyvault-name", default=None)
 
-    parser.add_argument("--share-workspace", default=None)
-    parser.add_argument("--caddy-data-share-name", default=None)
-    parser.add_argument("--caddy-config-share-name", default=None)
-
-    parser.add_argument("--public-domain", default=None)
-    parser.add_argument("--acme-email", default=None)
-
-    parser.add_argument("--basic-auth-user", default=None)
     parser.add_argument(
-        "--basic-auth-hash",
+        "--data-share-name",
         default=None,
-        help="Basic Auth bcrypt hash. If you pass a plain password instead, the script will compute the bcrypt hash automatically.",
+        help="Azure Files share name to mount at /data (default: <container>-data)",
     )
-    parser.add_argument(
-        "--basic-auth-password",
-        default=None,
-        help="Basic Auth password (used to compute bcrypt hash if --basic-auth-hash not provided)",
-    )
-    parser.add_argument(
-        "--bcrypt-cost",
-        type=int,
-        default=14,
-        help="bcrypt cost for generated hash (default: 14)",
-    )
+    # Back-compat alias from the older code-server-based deploy model.
+    parser.add_argument("--share-workspace", dest="data_share_name", default=None, help=argparse.SUPPRESS)
 
     parser.add_argument(
         "--build",
@@ -250,10 +360,6 @@ def main() -> None:
         help="Offer to save entered deploy-time values to Key Vault secrets (default: off)",
     )
 
-    parser.add_argument("--public-domain-secret", default="public-domain")
-    parser.add_argument("--acme-email-secret", default="acme-email")
-    parser.add_argument("--basic-auth-user-secret", default="basic-auth-user")
-    parser.add_argument("--basic-auth-hash-secret", default="basic-auth-hash")
     parser.add_argument("--image-secret", default="image")
     parser.add_argument(
         "--env-file",
@@ -324,8 +430,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--upload-env-prefixes",
-        default="BASIC_AUTH_",
-        help="Comma-separated prefixes to include when uploading env (default: BASIC_AUTH_)",
+        default="FTP_,OUT_DIR,RETENTION_",
+        help="Comma-separated prefixes to include when uploading env (default: FTP_,OUT_DIR,RETENTION_)",
     )
     parser.add_argument(
         "--upload-env-raw",
@@ -334,49 +440,16 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "--prefetch-images",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Pre-pull Caddy image locally to validate it exists (default: enabled)",
-    )
-
-    parser.add_argument(
         "--cpu",
         type=float,
         default=None,
-        help=f"App CPU cores (deprecated, use --app-cpu). Default: {VarsEnum.APP_CPU_CORES.value} from .env.deploy, fallback {DEFAULT_CPU_CORES}",
-    )
-    parser.add_argument(
-        "--app-cpu",
-        type=float,
-        default=None,
-        help="App CPU cores",
+        help=f"CPU cores for app containers (default: {VarsEnum.APP_CPU_CORES.value} from .env.deploy, fallback {DEFAULT_APP_CPU_CORES})",
     )
     parser.add_argument(
         "--memory",
         type=float,
         default=None,
-        help=f"App Memory GB (deprecated, use --app-memory). Default: {VarsEnum.APP_MEMORY_GB.value} from .env.deploy, fallback {DEFAULT_MEMORY_GB})",
-    )
-    parser.add_argument(
-        "--app-memory",
-        type=float,
-        default=None,
-        help="App Memory GB",
-    )
-
-    # Prefer a stable mirror to avoid Docker Hub rate limiting in ACI.
-    # Note: ghcr.io/caddyserver/caddy does not publish a '2-alpine' tag; we use a mirror.
-    parser.add_argument("--caddy-image", default=None)
-    parser.add_argument(
-        "--compose-app-service",
-        default=None,
-        help="Service name in docker-compose.yml for the application (default: auto-detect)",
-    )
-    parser.add_argument(
-        "--compose-caddy-service",
-        default=None,
-        help="Service name in docker-compose.yml for the caddy sidecar (default: auto-detect)",
+        help=f"Memory GB for app containers (default: {VarsEnum.APP_MEMORY_GB.value} from .env.deploy, fallback {DEFAULT_APP_MEMORY_GB})",
     )
 
     args = parser.parse_args()
@@ -390,91 +463,6 @@ def main() -> None:
 
     # scripts/deploy/azure_deploy_container.py -> repo root is 2 parents up.
     repo_root = Path(__file__).resolve().parents[2]
-
-    # Load defaults from docker-compose.yml (Source of Truth)
-    config_app_port = 8080 # Fallback
-    config_caddy_image = "caddy:2-alpine"
-    config_docker_context = None
-
-    try:
-        # Use PyYAML-based helper which handles interpolation and doesn't require docker runtime.
-        compose_config = compose_helpers.load_docker_compose_config(repo_root)
-        services = compose_config.get("services", {})
-        
-        # Service Discovery via x-deploy-role (Concept: Explicit Contract)
-        detected_app_name = None
-        detected_caddy_name = None
-        detected_other_name = None
-
-        for name, svc in services.items():
-            role = compose_helpers.get_deploy_role(svc)
-            if role == "app":
-                detected_app_name = name
-            elif role == "sidecar":
-                detected_caddy_name = name
-            else:
-                detected_other_name = name
-
-        # 1. Resolve Sidecar Service
-        # CLI Argument > x-deploy-role > Auto-detect fallback (none)
-        caddy_service_name = args.compose_caddy_service or detected_caddy_name
-        
-        if caddy_service_name:
-            if caddy_service_name in services:
-                 caddy_service = services[caddy_service_name]
-                 config_caddy_image = compose_helpers.get_image(caddy_service) or "caddy:2-alpine"
-            else:
-                 print(f"⚠️  [warn] Targeted Caddy service '{caddy_service_name}' not found", file=sys.stderr)
-
-        # 2. Resolve App Service
-        # CLI Argument > x-deploy-role > Auto-detect fallback (none)
-        app_service_name = args.compose_app_service or detected_app_name
-
-        if app_service_name:
-            if app_service_name in services:
-                # Log success if using auto-detected from role
-                if not args.compose_app_service and detected_app_name:
-                    print(f"ℹ️  [deploy] Detected services from x-deploy-role: app='{app_service_name}', sidecar='{caddy_service_name}'")
-
-                app_service = services[app_service_name]
-                
-                # Docker context: Resolve relative to repo_root
-                raw_context = compose_helpers.get_build_context(app_service)
-                if raw_context:
-                    config_docker_context = str((repo_root / raw_context).resolve())
-
-                # Determine app port
-                app_ports = compose_helpers.get_ports(app_service)
-                if app_ports:
-                     for p in app_ports:
-                        # Handle "HOST:CONTAINER" string format which PyYAML returns
-                        if isinstance(p, str): 
-                             if ":" in p:
-                                 parts = p.split(":")
-                                 config_app_port = int(parts[-1])
-                             else:
-                                 config_app_port = int(p)
-                             break
-                        elif isinstance(p, int):
-                            config_app_port = p
-                            break
-                        elif isinstance(p, dict):
-                            # Handle long syntax: ports: [{ target: 8080, published: 80, ... }]
-                            # We want the container port (target)
-                            if "target" in p:
-                                config_app_port = int(p["target"])
-                                break
-                else:
-                     port_env = compose_helpers.get_env_var(app_service, "CODE_SERVER_PORT")
-                     if port_env:
-                         config_app_port = int(port_env)
-            else:
-                 print(f"⚠️  [warn] Targeted App service '{app_service_name}' not found", file=sys.stderr)
-        else:
-             print("⚠️  [warn] Could not detect App service. Add 'x-deploy-role: app' to docker-compose.yml or use --compose-app-service.", file=sys.stderr)
-
-    except Exception as e:
-        print(f"⚠️  [warn] Failed to load docker-compose.yml defaults: {e}", file=sys.stderr)
 
     interactive = is_interactive() if args.interactive is None else bool(args.interactive)
     # Key Vault is used at *runtime* by the container to fetch the full .env secret.
@@ -598,8 +586,8 @@ def main() -> None:
     name = (
         args.container_name
         or os.getenv(VarsEnum.AZURE_CONTAINER_NAME.value)
-        or "protected-azure-container"
-    ).strip() or "protected-azure-container"
+        or "camera-storage-viewer"
+    ).strip() or "camera-storage-viewer"
     dns_label = (args.dns_label or name).strip().lower()
 
     storage_name = (args.storage_name or f"{rg}stg").replace("-", "")
@@ -613,16 +601,13 @@ def main() -> None:
     if args.keyvault_name:
         kv_name = args.keyvault_name
     else:
-        # e.g. "protected-azure-container-rg" -> "protectedazurecontainkv"
+        # e.g. "camera-storage-viewer-rg" -> "protectedazurecontainkv"
         base = "".join([c for c in rg.lower() if c.isalnum()])
         kv_name = f"{base}kv"[:24]
 
     # Ensure Azure resources exist so a single azure_deploy_container invocation can bootstrap infra.
-    shares_to_ensure = [
-        args.share_workspace or f"{name}-workspace",
-        args.caddy_data_share_name or f"{name}-caddy-data",
-        args.caddy_config_share_name or f"{name}-caddy-config",
-    ]
+    # FTP-only: single durable data share mounted at /data.
+    shares_to_ensure = [args.data_share_name or f"{name}-data"]
     ensure_infra(
         resource_group=rg,
         location=location,
@@ -673,7 +658,7 @@ def main() -> None:
         )
 
     # Upload runtime env to Key Vault for the container to fetch at startup.
-    # By default we upload only BASIC_AUTH_* keys to avoid leaking deploy credentials.
+    # By default we upload only selected runtime keys (see --upload-env-prefixes) to avoid leaking deploy credentials.
     if args.upload_env:
         # By default, always upload the repo root .env (runtime) so KV has the latest
         # runtime configuration, even if deploy-time values are loaded from .env.deploy.
@@ -709,9 +694,7 @@ def main() -> None:
         else:
             kv_name_for_secrets = kv_name
 
-    share_workspace = shares_to_ensure[0]
-    caddy_data_share = shares_to_ensure[1]
-    caddy_config_share = shares_to_ensure[2]
+    data_share_name = shares_to_ensure[0]
 
     image = resolve_value(
         name="image",
@@ -721,7 +704,7 @@ def main() -> None:
         kv_secret_name=args.image_secret,
         interactive=interactive,
         secret=False,
-        prompt_label="Container image (e.g. ghcr.io/<owner>/protected-azure-container:tag)",
+        prompt_label="Container image (e.g. ghcr.io/<owner>/camera-storage-viewer:tag)",
         persist_to_kv=persist_to_kv,
     )
     if not image:
@@ -733,108 +716,7 @@ def main() -> None:
     build_requested = bool(args.build or args.build_push)
     push_requested = bool(args.push or args.build_push)
 
-    public_domain = resolve_value(
-        name="public_domain",
-        arg_value=args.public_domain,
-        env_names=[VarsEnum.PUBLIC_DOMAIN.value],
-        kv_name=kv_name_for_secrets,
-        kv_secret_name=args.public_domain_secret,
-        interactive=interactive,
-        secret=False,
-        prompt_label="Public domain (e.g. yourdomain.com)",
-        persist_to_kv=persist_to_kv,
-    )
-    if not public_domain:
-        raise SystemExit(
-            "Missing public domain. Provide --public-domain, set PUBLIC_DOMAIN, or store Key Vault secret 'public-domain'."
-        )
-
-    acme_email = resolve_value(
-        name="acme_email",
-        arg_value=args.acme_email,
-        env_names=[VarsEnum.ACME_EMAIL.value],
-        kv_name=kv_name_for_secrets,
-        kv_secret_name=args.acme_email_secret,
-        interactive=interactive,
-        secret=False,
-        prompt_label="ACME email (Let's Encrypt)",
-        persist_to_kv=persist_to_kv,
-    )
-    if not acme_email:
-        raise SystemExit(
-            "Missing ACME email. Provide --acme-email, set ACME_EMAIL, or store Key Vault secret 'acme-email'."
-        )
-
-    basic_auth_user = resolve_value(
-        name="basic_auth_user",
-        arg_value=args.basic_auth_user,
-        env_names=[VarsEnum.BASIC_AUTH_USER.value],
-        kv_name=kv_name_for_secrets,
-        kv_secret_name=args.basic_auth_user_secret,
-        interactive=interactive,
-        secret=False,
-        prompt_label="Basic Auth username",
-        default="admin",
-        persist_to_kv=persist_to_kv,
-    ) or "admin"
-
-    # Only resolve an existing hash from args/env/Key Vault. Do not prompt for a hash.
-    basic_auth_hash_or_password = resolve_value(
-        name="basic_auth_hash",
-        arg_value=args.basic_auth_hash,
-        env_names=[SecretsEnum.BASIC_AUTH_HASH.value],
-        kv_name=kv_name_for_secrets,
-        kv_secret_name=args.basic_auth_hash_secret,
-        interactive=False,
-        secret=True,
-        prompt_label=None,
-        persist_to_kv=persist_to_kv,
-    )
-
-    basic_auth_hash: str | None = None
-    if basic_auth_hash_or_password:
-        if looks_like_bcrypt_hash(basic_auth_hash_or_password):
-            basic_auth_hash = basic_auth_hash_or_password
-        else:
-            # Treat as plaintext password and compute bcrypt hash.
-            try:
-                basic_auth_hash = bcrypt_hash_password(basic_auth_hash_or_password, cost=args.bcrypt_cost)
-            except Exception as e:
-                raise SystemExit(f"Failed to compute bcrypt hash for password provided via --basic-auth-hash: {e}")
-
-    if not basic_auth_hash:
-        # Ask for password and compute the bcrypt hash (Caddy-compatible).
-        # Intentionally NOT loaded from env files.
-        basic_auth_password = (args.basic_auth_password or "").strip()
-        if not basic_auth_password and interactive:
-            basic_auth_password = prompt_secret("Basic Auth password")
-        if not basic_auth_password:
-            raise SystemExit(
-                "Missing Basic Auth password. Provide --basic-auth-password, or store Key Vault secret 'basic-auth-hash'."
-            )
-
-        try:
-            basic_auth_hash = bcrypt_hash_password(basic_auth_password, cost=args.bcrypt_cost)
-        except Exception as e:
-            raise SystemExit(f"Failed to compute bcrypt hash for password: {e}")
-
-        # Offer to persist the computed hash.
-        if persist_to_kv and args.basic_auth_hash_secret and interactive:
-            if prompt_yes_no(
-                f"Save computed bcrypt hash to Key Vault secret '{args.basic_auth_hash_secret}'?",
-                default=True,
-            ):
-                try:
-                    kv_secret_set(kv_name, args.basic_auth_hash_secret, basic_auth_hash)
-                except subprocess.CalledProcessError as e:
-                    print(
-                        "WARNING: Failed to save computed hash to Key Vault; continuing without persisting.",
-                        file=sys.stderr,
-                    )
-                    print(
-                        _format_keyvault_set_help(vault_name=kv_name, stderr=getattr(e, "stderr", None)),
-                        file=sys.stderr,
-                    )
+    # FTP-only deployment: no public domain/TLS proxy/basic auth required.
 
     # Optional registry credentials for private images (e.g. GHCR).
     # If deploying a public image, do not prompt for registry settings.
@@ -843,8 +725,8 @@ def main() -> None:
     # If the image is private and the user didn't specify any build/push flags,
     # default to publishing the image so a single command works end-to-end.
     if not (args.build or args.push or args.build_push):
-        # Default to build-push unless explicitly disabled via --no-publish
-        publish_default = True
+        # Default to build-push only for private GHCR images (or when user opts in)
+        publish_default = ghcr_private
         publish = publish_default if args.publish is None else bool(args.publish)
         if publish:
             build_requested = True
@@ -855,7 +737,14 @@ def main() -> None:
     registry_username: str | None = None
     registry_password: str | None = None
 
-    wants_registry_creds = bool(ghcr_private or push_requested)
+    # If credentials are already provided via env, include them in the ACI YAML even
+    # when GHCR_PRIVATE is not set. This avoids ACI (InaccessibleImage) surprises.
+    has_ghcr_creds_env = bool(
+        str(os.getenv(VarsEnum.GHCR_USERNAME.value) or "").strip()
+        and str(os.getenv(SecretsEnum.GHCR_TOKEN.value) or "").strip()
+    )
+
+    wants_registry_creds = bool(ghcr_private or push_requested or has_ghcr_creds_env)
     if wants_registry_creds:
         registry_server = "ghcr.io"
 
@@ -880,6 +769,17 @@ def main() -> None:
             default=registry_username_default,
         )
 
+        # Common footgun: env.deploy.example uses a placeholder image.
+        # If the user forgot to change it, we'll rewrite it to the resolved username.
+        # This avoids GHCR errors like: denied: permission_denied: create_package
+        if registry_username:
+            placeholder_prefixes = ("ghcr.io/your-user/", "ghcr.io/YOUR-USER/", "ghcr.io/your_user/")
+            for prefix in placeholder_prefixes:
+                if image.startswith(prefix):
+                    image = f"ghcr.io/{registry_username}/" + image[len(prefix) :]
+                    print(f"🔧 [docker] Rewrote image to: {image}")
+                    break
+
         registry_password = resolve_value(
             name="ghcr_token",
             arg_value=None,
@@ -901,7 +801,7 @@ def main() -> None:
     if push_requested:
         if not registry_server:
             raise SystemExit(
-                "Cannot determine registry server for push. For GHCR-only mode, set GHCR_PRIVATE=true and ensure CONTAINER_IMAGE is a ghcr.io/... ref."
+                "Cannot determine registry server for push. For GHCR-only mode, set GHCR_PRIVATE=true and ensure APP_IMAGE is a ghcr.io/... ref."
             )
 
         # For pushes, credentials are required even if the image is public.
@@ -913,16 +813,21 @@ def main() -> None:
     # Build/push before deploy if requested.
     if build_requested or push_requested:
         # Docker operations happen from the repo root by default.
-        docker_context = (args.docker_context or "").strip() or config_docker_context or str(repo_root)
+        docker_context = (args.docker_context or str(repo_root)).strip() or str(repo_root)
         dockerfile = (args.dockerfile or "").strip() or None
 
-        if not dockerfile and not args.docker_context and not config_docker_context:
-            if (repo_root / "docker" / "Dockerfile").exists():
-                # If docker/Dockerfile exists and no context given,
-                # assume the user wants to build the inner "docker" directory as a context.
-                docker_context = str(repo_root / "docker")
-                # Leave dockerfile=None so it defaults to "Dockerfile" inside that context.
-                dockerfile = None
+        # Auto-detect our Dockerfile location.
+        # Keep default context as repo root so COPY can include files like requirements.txt.
+        if not dockerfile:
+            candidate = repo_root / "docker" / "Dockerfile"
+            if candidate.exists():
+                dockerfile = str(candidate)
+
+        # Resolve relative Dockerfile paths against repo root for determinism.
+        if dockerfile:
+            dockerfile_path = Path(dockerfile)
+            if not dockerfile_path.is_absolute():
+                dockerfile = str((repo_root / dockerfile_path).resolve())
 
         if build_requested:
             print(f"🏗️  [docker] building image: {image}")
@@ -960,157 +865,323 @@ def main() -> None:
     storage_key = get_storage_key(storage_name, rg)
     identity_id, identity_client_id, identity_tenant_id = get_identity_details(identity_name, rg)
 
-    # Recreate container group for identity/env updates.
-    # Delete existing container if any, then wait for Azure to fully clean up to prevent "Conflict" errors.
-    run_az_command(["container", "delete", "--resource-group", rg, "--name", name, "--yes"], capture_output=False, ignore_errors=True)
-    
-    # Wait for container to be fully deleted (not just deletion initiated)
-    print("⏳ [deploy] Waiting for previous container to be fully deleted...")
-    max_wait = 120  # seconds
-    poll_interval = 5
-    waited = 0
-    while waited < max_wait:
-        # Check if container still exists
-        result = run_az_command(
-            ["container", "show", "--resource-group", rg, "--name", name, "--query", "provisioningState", "-o", "tsv"],
-            capture_output=True,
+    service = str(args.service or "ftp").strip().lower()
+
+    def wait_for_container_group_deleted(*, container_name: str) -> None:
+        print(f"⏳ [deploy] Waiting for previous container '{container_name}' to be fully deleted...")
+        max_wait = 120  # seconds
+        poll_interval = 5
+        waited = 0
+        while waited < max_wait:
+            result = run_az_command(
+                [
+                    "container",
+                    "show",
+                    "--resource-group",
+                    rg,
+                    "--name",
+                    container_name,
+                    "--query",
+                    "provisioningState",
+                    "-o",
+                    "tsv",
+                ],
+                capture_output=True,
+                ignore_errors=True,
+                verbose=False,
+            )
+            if result is None:
+                print(f"✅ [deploy] Previous container '{container_name}' deleted after {waited}s")
+                return
+            state = str(result).strip().lower()
+            if state in ("deleting", "pending"):
+                print(f"⏳ [deploy] Container '{container_name}' still {state}... waiting")
+            time.sleep(poll_interval)
+            waited += poll_interval
+        print(f"⚠️  [deploy] Timed out waiting for '{container_name}' deletion after {max_wait}s, proceeding anyway...")
+
+    # Recreate container group(s) for identity/env updates.
+    # Delete existing container group(s) if any, then wait for Azure to fully clean up to prevent "Conflict" errors.
+    delete_names = [name]
+    if service == "full":
+        ftp_name = str(args.ftp_container_name or f"{name}-ftp").strip() or f"{name}-ftp"
+        if ftp_name != name:
+            delete_names.append(ftp_name)
+
+    for delete_name in delete_names:
+        run_az_command(
+            ["container", "delete", "--resource-group", rg, "--name", delete_name, "--yes"],
+            capture_output=False,
             ignore_errors=True,
-            verbose=False,
         )
-        if result is None:
-            # Container no longer exists
-            print(f"✅ [deploy] Previous container deleted after {waited}s")
-            break
-        state = str(result).strip().lower()
-        if state in ("deleting", "pending"):
-            print(f"⏳ [deploy] Container still {state}... waiting")
-        time.sleep(poll_interval)
-        waited += poll_interval
-    else:
-        print(f"⚠️  [deploy] Timed out waiting for container deletion after {max_wait}s, proceeding anyway...")
+        wait_for_container_group_deleted(container_name=delete_name)
 
-    caddy_image = (args.caddy_image or "").strip() or config_caddy_image
+    # FTP-only deployment: no sidecar images to prefetch.
 
-    if args.prefetch_images:
+    cpu_cores = float(
+        args.cpu
+        if args.cpu is not None
+        else (os.getenv(VarsEnum.APP_CPU_CORES.value) or str(DEFAULT_APP_CPU_CORES))
+    )
+    memory_gb = float(
+        args.memory
+        if args.memory is not None
+        else (os.getenv(VarsEnum.APP_MEMORY_GB.value) or str(DEFAULT_APP_MEMORY_GB))
+    )
+
+    repo_root = Path(__file__).resolve().parents[2]
+    compose_path = Path(args.compose_file) if args.compose_file else (repo_root / "docker-compose.yml")
+    try:
+        compose_defaults = derive_defaults(
+            compose_path=compose_path,
+            compose_app_service=(str(args.compose_app_service).strip() or None) if args.compose_app_service else None,
+            compose_caddy_service=(str(args.compose_caddy_service).strip() or None) if args.compose_caddy_service else None,
+            compose_ftp_service=(str(args.compose_ftp_service).strip() or None) if args.compose_ftp_service else None,
+        )
+    except Exception as e:
+        compose_defaults = None
+        print(f"⚠️  [deploy] Could not load compose defaults from {compose_path}: {e}")
+
+    caddy_image_override = (
+        (str(args.caddy_image).strip() or None)
+        if getattr(args, "caddy_image", None)
+        else (str(os.getenv(VarsEnum.CADDY_IMAGE.value) or "").strip() or None)
+    )
+
+    if service == "web":
+        # Web-only container group: expose one port (default: 80).
+        web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "").strip() or (str(compose_defaults.web_port) if compose_defaults and compose_defaults.web_port else "80"))
         try:
-            print(f"🔎 [docker] prefetching caddy image: {caddy_image}")
-            docker_pull(image=caddy_image)
+            yaml_text = generate_deploy_yaml_web(
+                name=name,
+                location=location,
+                image=image,
+                registry_server=registry_server,
+                registry_username=registry_username,
+                registry_password=registry_password,
+                identity_id=identity_id,
+                identity_client_id=identity_client_id,
+                identity_tenant_id=identity_tenant_id,
+                storage_name=storage_name,
+                storage_key=storage_key,
+                kv_name=kv_name,
+                dns_label=dns_label,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                data_share_name=data_share_name,
+                web_port=web_port,
+                web_command=(compose_defaults.web_command if compose_defaults else None),
+            )
+        except ValueError as e:
+            raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
+    elif service == "web-caddy":
+        # Web + Caddy sidecar: expose 80/443 only.
+        public_domain = str(os.getenv(VarsEnum.PUBLIC_DOMAIN.value) or "").strip()
+        if not public_domain:
+            raise SystemExit(
+                f"[deploy] {VarsEnum.PUBLIC_DOMAIN.value} is required for --service web-caddy (e.g. camera-storage-viewer.zenia.eu)"
+            )
+        acme_email = str(os.getenv(VarsEnum.ACME_EMAIL.value) or "").strip() or None
+        web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "").strip() or (str(compose_defaults.web_port) if compose_defaults and compose_defaults.web_port else "8081"))
+        try:
+            yaml_text = generate_deploy_yaml_web_caddy(
+                name=name,
+                location=location,
+                image=image,
+                registry_server=registry_server,
+                registry_username=registry_username,
+                registry_password=registry_password,
+                identity_id=identity_id,
+                identity_client_id=identity_client_id,
+                identity_tenant_id=identity_tenant_id,
+                storage_name=storage_name,
+                storage_key=storage_key,
+                kv_name=kv_name,
+                dns_label=dns_label,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                data_share_name=data_share_name,
+                public_domain=public_domain,
+                acme_email=acme_email,
+                caddy_image=(
+                    caddy_image_override
+                    or (compose_defaults.caddy_image if compose_defaults and compose_defaults.caddy_image else None)
+                    or "caddy:2"
+                ),
+                web_port=web_port,
+                web_command=(compose_defaults.web_command if compose_defaults else None),
+            )
+        except ValueError as e:
+            raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
+    elif service == "full":
+        # Full deploy: web-caddy (base group) + ftp (separate group due to ACI 5-port public limit).
+        public_domain = str(os.getenv(VarsEnum.PUBLIC_DOMAIN.value) or "").strip()
+        if not public_domain:
+            raise SystemExit(
+                f"[deploy] {VarsEnum.PUBLIC_DOMAIN.value} is required for --service full (e.g. camera-storage-viewer.zenia.eu)"
+            )
 
-            # If we are using GHCR for the main image, mirror Caddy to GHCR as well to avoid
-            # multi-registry conflicts (ACI "RegistryErrorResponse" from Docker Hub).
-            # We assume if the user is pushing/using 'ghcr.io', we can also push caddy there.
-            if registry_server and "ghcr.io" in registry_server and registry_username:
-                # Prefer keeping Caddy in the same ghcr.io/<owner>/<repo>/... namespace as the
-                # main image. This avoids pushing to ghcr.io/<owner>/caddy, which often fails in
-                # GitHub Actions due to package scoping/permissions.
-                repo_prefix = ghcr_repo_prefix_for_image(image=image, registry_server=registry_server)
-                if not repo_prefix:
-                    repo_prefix = f"{registry_server}/{registry_username}"
+        acme_email = str(os.getenv(VarsEnum.ACME_EMAIL.value) or "").strip() or None
+        web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "").strip() or (str(compose_defaults.web_port) if compose_defaults and compose_defaults.web_port else "8081"))
 
-                caddy_mirror_tag = f"{repo_prefix}/caddy:2-alpine"
+        ftp_name = str(args.ftp_container_name or f"{name}-ftp").strip() or f"{name}-ftp"
+        ftp_dns_label = str(args.ftp_dns_label or f"{dns_label}-ftp").strip() or f"{dns_label}-ftp"
 
-                if caddy_image == caddy_mirror_tag:
-                    print(f"ℹ️  [docker] Caddy image already in GHCR namespace: {caddy_image}")
-                else:
-                    print(f"🔁 [docker] Mirroring caddy to GHCR: {caddy_mirror_tag}")
-                    try:
-                        # Retag
-                        subprocess.run(["docker", "tag", caddy_image, caddy_mirror_tag], check=True, capture_output=True)
-                        # Push
-                        docker_push(image=caddy_mirror_tag)
-                        # Use the mirrored image in the YAML
-                        caddy_image = caddy_mirror_tag
-                        print(f"✅ [docker] Successfully mirrored caddy. Using: {caddy_image}")
-                    except subprocess.CalledProcessError as e:
-                        hint = _hint_for_ghcr_scope_error(getattr(e, "stderr", None))
-                        if hint:
-                            print(hint, file=sys.stderr)
-                        print(f"⚠️  [warn] Failed to mirror caddy to GHCR ({e}); falling back to {caddy_image}", file=sys.stderr)
-                    except Exception as e:
-                        print(f"⚠️  [warn] Failed to mirror caddy to GHCR ({e}); falling back to {caddy_image}", file=sys.stderr)
+        ftp_port = int(
+            (os.getenv(VarsEnum.FTP_PORT.value) or "").strip()
+            or (str(compose_defaults.ftp_port) if compose_defaults and compose_defaults.ftp_port else "21")
+        )
+        ftp_passive_port_min = int(
+            (os.getenv(VarsEnum.FTP_PASSIVE_PORT_MIN.value) or "").strip()
+            or (str(compose_defaults.ftp_passive_port_min) if compose_defaults and compose_defaults.ftp_passive_port_min else "50000")
+        )
+        ftp_passive_port_max = int(
+            (os.getenv(VarsEnum.FTP_PASSIVE_PORT_MAX.value) or "").strip()
+            or (str(compose_defaults.ftp_passive_port_max) if compose_defaults and compose_defaults.ftp_passive_port_max else "50003")
+        )
 
-        except Exception as e:
-            print(f"⚠️  [warn] Could not prefetch caddy image locally ({e}); continuing.", file=sys.stderr)
+        ports_unique = sorted(set([ftp_port] + list(range(ftp_passive_port_min, ftp_passive_port_max + 1))))
+        if len(ports_unique) > 5:
+            raise SystemExit(
+                "ACI supports at most 5 public ports per container group. "
+                f"Your FTP port config would expose {len(ports_unique)} ports. "
+                "Set FTP_PASSIVE_PORT_MAX so the passive range is <= 4 ports (e.g. 50000-50003), "
+                "or deploy to a platform that supports larger port ranges."
+            )
 
-    app_cpu_cores = float(
-        args.app_cpu
-        or args.cpu
-        or os.getenv(VarsEnum.APP_CPU_CORES.value)
-        or get_spec(DEPLOY_SCHEMA, VarsEnum.APP_CPU_CORES).default 
-        or str(DEFAULT_CPU_CORES)
-    )
-    app_memory_gb = float(
-        args.app_memory
-        or args.memory
-        or os.getenv(VarsEnum.APP_MEMORY_GB.value)
-        or get_spec(DEPLOY_SCHEMA, VarsEnum.APP_MEMORY_GB).default 
-        or str(DEFAULT_MEMORY_GB)
-    )
+        try:
+            yaml_text_web = generate_deploy_yaml_web_caddy(
+                name=name,
+                location=location,
+                image=image,
+                registry_server=registry_server,
+                registry_username=registry_username,
+                registry_password=registry_password,
+                identity_id=identity_id,
+                identity_client_id=identity_client_id,
+                identity_tenant_id=identity_tenant_id,
+                storage_name=storage_name,
+                storage_key=storage_key,
+                kv_name=kv_name,
+                dns_label=dns_label,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                data_share_name=data_share_name,
+                public_domain=public_domain,
+                acme_email=acme_email,
+                caddy_image=(
+                    caddy_image_override
+                    or (compose_defaults.caddy_image if compose_defaults and compose_defaults.caddy_image else None)
+                    or "caddy:2"
+                ),
+                web_port=web_port,
+                web_command=(compose_defaults.web_command if compose_defaults else None),
+            )
+            yaml_text_ftp = generate_deploy_yaml(
+                name=ftp_name,
+                location=location,
+                image=image,
+                registry_server=registry_server,
+                registry_username=registry_username,
+                registry_password=registry_password,
+                identity_id=identity_id,
+                identity_client_id=identity_client_id,
+                identity_tenant_id=identity_tenant_id,
+                storage_name=storage_name,
+                storage_key=storage_key,
+                kv_name=kv_name,
+                dns_label=ftp_dns_label,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                data_share_name=data_share_name,
+                ftp_port=ftp_port,
+                ftp_passive_port_min=ftp_passive_port_min,
+                ftp_passive_port_max=ftp_passive_port_max,
+            )
+        except ValueError as e:
+            raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
 
-    caddy_cpu_cores = float(
-        os.getenv(VarsEnum.CADDY_CPU_CORES.value)
-        or get_spec(DEPLOY_SCHEMA, VarsEnum.CADDY_CPU_CORES).default 
-        or "0.5"
-    )
-    caddy_memory_gb = float(
-        os.getenv(VarsEnum.CADDY_MEMORY_GB.value)
-        or get_spec(DEPLOY_SCHEMA, VarsEnum.CADDY_MEMORY_GB).default 
-        or "0.5"
-    )
+        def create_from_yaml_text(*, yaml_text: str) -> None:
+            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+                f.write(yaml_text)
+                yaml_path = f.name
 
-    # Resolve "other" container config
-    # 1. Image: CLI > Env > docker-compose (detected_other_name)
-    other_image = os.getenv(VarsEnum.OTHER_IMAGE.value)
-    
-    if not other_image and detected_other_name and detected_other_name in services:
-        other_svc = services[detected_other_name]
-        other_image = compose_helpers.get_image(other_svc)
-        print(f"ℹ️  [deploy] Detected other service '{detected_other_name}' -> {other_image}")
+            print(f"📝 [deploy] wrote: {yaml_path}")
 
-    other_cpu_cores = float(
-        os.getenv(VarsEnum.OTHER_CPU_CORES.value)
-        or get_spec(DEPLOY_SCHEMA, VarsEnum.OTHER_CPU_CORES).default 
-        or "0.25"
-    )
-    other_memory_gb = float(
-        os.getenv(VarsEnum.OTHER_MEMORY_GB.value)
-        or get_spec(DEPLOY_SCHEMA, VarsEnum.OTHER_MEMORY_GB).default 
-        or "0.5"
-    )
+            max_retries = 5
+            base_delay = 10.0  # seconds
+            for attempt in range(1, max_retries + 1):
+                try:
+                    run_az_command(["container", "create", "--resource-group", rg, "--file", yaml_path], capture_output=False)
+                    return
+                except subprocess.CalledProcessError as e:
+                    err = getattr(e, "stderr", "") or ""
+                    is_transient = "RegistryErrorResponse" in err or "Conflict" in err
+                    if is_transient and attempt < max_retries:
+                        sleep_time = min(60.0, base_delay * (2 ** (attempt - 1)))
+                        if "index.docker.io" in err or "docker.io" in err:
+                            print(
+                                "⚠️  [deploy] Registry error pulling from Docker Hub (attempt "
+                                f"{attempt}/{max_retries}). Retrying in {sleep_time:.0f}s...\n"
+                                "    Hint: set CADDY_IMAGE (or --caddy-image) to a non-Docker-Hub image to avoid rate limits."
+                            )
+                        else:
+                            print(
+                                f"⚠️  [deploy] Registry/ACI transient error (attempt {attempt}/{max_retries}). Retrying in {sleep_time:.0f}s..."
+                            )
+                        time.sleep(sleep_time)
+                    else:
+                        raise
 
-    caddy_yaml_image = caddy_image
+        create_from_yaml_text(yaml_text=yaml_text_web)
+        create_from_yaml_text(yaml_text=yaml_text_ftp)
 
-    yaml_text = generate_deploy_yaml(
-        name=name,
-        location=location,
-        image=image,
-        registry_server=registry_server,
-        registry_username=registry_username,
-        registry_password=registry_password,
-        identity_id=identity_id,
-        identity_client_id=identity_client_id,
-        identity_tenant_id=identity_tenant_id,
-        storage_name=storage_name,
-        storage_key=storage_key,
-        kv_name=kv_name,
-        dns_label=dns_label,
-        public_domain=public_domain,
-        acme_email=acme_email,
-        basic_auth_user=basic_auth_user,
-        basic_auth_hash=basic_auth_hash,
-        app_cpu_cores=app_cpu_cores,
-        app_memory_gb=app_memory_gb,
-        share_workspace=share_workspace,
-        caddy_data_share_name=caddy_data_share,
-        caddy_config_share_name=caddy_config_share,
-        caddy_image=caddy_yaml_image,
-        caddy_cpu_cores=caddy_cpu_cores,
-        caddy_memory_gb=caddy_memory_gb,
-        app_port=config_app_port,
-        other_image=other_image,
-        other_cpu_cores=other_cpu_cores,
-        other_memory_gb=other_memory_gb,
-    )
+        print("\n[done] Deployed.")
+        print(f"  Web FQDN: {dns_label}.{location}.azurecontainer.io")
+        print(f"  Web URL:  https://{public_domain}")
+        print(f"  FTP FQDN: {ftp_dns_label}.{location}.azurecontainer.io")
+        print(f"  FTP URL:  ftp://{ftp_dns_label}.{location}.azurecontainer.io:{ftp_port}")
+        return
+    else:
+        ftp_port = int((os.getenv(VarsEnum.FTP_PORT.value) or "21").strip() or "21")
+        ftp_passive_port_min = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MIN.value) or "50000").strip() or "50000")
+        ftp_passive_port_max = int((os.getenv(VarsEnum.FTP_PASSIVE_PORT_MAX.value) or "50003").strip() or "50003")
+
+        # Azure Container Instances has a hard limit of 5 public ports per container group.
+        # FTP needs 1 control port + N passive ports.
+        ports_unique = sorted(set([ftp_port] + list(range(ftp_passive_port_min, ftp_passive_port_max + 1))))
+        if len(ports_unique) > 5:
+            raise SystemExit(
+                "ACI supports at most 5 public ports per container group. "
+                f"Your FTP port config would expose {len(ports_unique)} ports. "
+                "Set FTP_PASSIVE_PORT_MAX so the passive range is <= 4 ports (e.g. 50000-50003), "
+                "or deploy to a platform that supports larger port ranges."
+            )
+
+        try:
+            yaml_text = generate_deploy_yaml(
+                name=name,
+                location=location,
+                image=image,
+                registry_server=registry_server,
+                registry_username=registry_username,
+                registry_password=registry_password,
+                identity_id=identity_id,
+                identity_client_id=identity_client_id,
+                identity_tenant_id=identity_tenant_id,
+                storage_name=storage_name,
+                storage_key=storage_key,
+                kv_name=kv_name,
+                dns_label=dns_label,
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                data_share_name=data_share_name,
+                ftp_port=ftp_port,
+                ftp_passive_port_min=ftp_passive_port_min,
+                ftp_passive_port_max=ftp_passive_port_max,
+            )
+        except ValueError as e:
+            raise SystemExit(f"[deploy] Invalid ACI configuration: {e}")
 
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
         f.write(yaml_text)
@@ -1134,7 +1205,14 @@ def main() -> None:
             is_transient = "RegistryErrorResponse" in err or "Conflict" in err
             if is_transient and attempt < max_retries:
                 sleep_time = min(60.0, base_delay * (2 ** (attempt - 1)))
-                print(f"⚠️  [deploy] Registry conflict (attempt {attempt}/{max_retries}). Retrying in {sleep_time:.0f}s...")
+                if "index.docker.io" in err or "docker.io" in err:
+                    print(
+                        "⚠️  [deploy] Registry error pulling from Docker Hub (attempt "
+                        f"{attempt}/{max_retries}). Retrying in {sleep_time:.0f}s...\n"
+                        "    Hint: set CADDY_IMAGE (or --caddy-image) to a non-Docker-Hub image to avoid rate limits."
+                    )
+                else:
+                    print(f"⚠️  [deploy] Registry/ACI transient error (attempt {attempt}/{max_retries}). Retrying in {sleep_time:.0f}s...")
                 time.sleep(sleep_time)
             else:
                 # Not a transient error or out of retries
@@ -1142,7 +1220,12 @@ def main() -> None:
 
     print("\n[done] Deployed.")
     print(f"  FQDN: {dns_label}.{location}.azurecontainer.io")
-    print(f"  https://{public_domain}/  (VS Code)")
+    if service == "web":
+        print(f"  http://{dns_label}.{location}.azurecontainer.io")
+    elif service == "web-caddy":
+        print(f"  https://{public_domain}")
+    else:
+        print(f"  ftp://{dns_label}.{location}.azurecontainer.io:{ftp_port}")
 
 
 
