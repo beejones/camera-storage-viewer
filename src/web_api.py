@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+import os
+from datetime import date
+from pathlib import Path
+from typing import Annotated
+
+from dotenv import dotenv_values
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from src.thumbnails import ensure_thumbnail, generated_thumbnail_path, load_thumbnail_config
+from src.viewer_db import (
+    default_db_path,
+    last_upload_time_for_camera as db_last_upload_time_for_camera,
+    list_cameras as db_list_cameras,
+    list_clips_for_day as db_list_clips_for_day,
+    resolve_clip_by_id as db_resolve_clip_by_id,
+)
+from src.web_models import CameraOut, ClipDetailOut, ClipOut
+
+
+def _merged_env() -> dict[str, str]:
+    """Return merged env from (optional) dotenv file + process env.
+
+    Azure deployments can fetch a runtime .env into RUNTIME_ENV_PATH via azure_start.sh.
+    Locally, docker-compose typically supplies env vars directly.
+    """
+
+    env_path_candidates = [
+        Path(str(os.getenv("RUNTIME_ENV_PATH", "")).strip()).expanduser() if os.getenv("RUNTIME_ENV_PATH") else None,
+        Path("/app/.env"),
+    ]
+
+    file_kv: dict[str, str] = {}
+    for candidate in env_path_candidates:
+        if not candidate:
+            continue
+        if candidate.exists():
+            raw = dotenv_values(candidate)
+            for k, v in raw.items():
+                if not k:
+                    continue
+                file_kv[str(k)] = "" if v is None else str(v)
+            break
+
+    merged = dict(file_kv)
+    merged.update(os.environ)
+    return merged
+
+
+def _out_dir() -> Path:
+    env = _merged_env()
+    return Path(str(env.get("OUT_DIR", "/data")).strip() or "/data")
+
+
+def _require_token(request: Request) -> None:
+    env = _merged_env()
+    token = str(env.get("VIEWER_AUTH_TOKEN", "")).strip()
+    if not token:
+        return
+    auth = request.headers.get("authorization") or ""
+    if auth.strip() != f"Bearer {token}":
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+AuthDep = Annotated[None, Depends(_require_token)]
+
+app = FastAPI(title="Camera Storage Viewer")
+
+_BASE_DIR = Path(__file__).resolve().parent
+app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+
+
+@app.get("/")
+def viewer_home(request: Request) -> object:
+    return templates.TemplateResponse(request, "index.html")
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/api/cameras", response_model=list[CameraOut])
+def list_cameras(_: AuthDep) -> list[CameraOut]:
+    out_dir = _out_dir()
+    db_path = default_db_path(out_dir)
+    cameras: list[CameraOut] = []
+    for camera_id in db_list_cameras(out_dir=out_dir, db_path=db_path):
+        cameras.append(
+            CameraOut(
+                camera_id=camera_id,
+                display_name=camera_id,
+                last_upload_at=db_last_upload_time_for_camera(out_dir=out_dir, db_path=db_path, camera_id=camera_id),
+            )
+        )
+    return cameras
+
+
+@app.get("/api/cameras/{camera_id}/clips", response_model=list[ClipOut])
+def list_clips(
+    camera_id: str,
+    _: AuthDep,
+    day: Annotated[date, Query(alias="date")],
+) -> list[ClipOut]:
+    out_dir = _out_dir()
+    db_path = default_db_path(out_dir)
+    clips = db_list_clips_for_day(out_dir=out_dir, db_path=db_path, camera_id=camera_id, day=day)
+
+    thumb_cfg = load_thumbnail_config()
+    return [
+        ClipOut(
+            clip_id=c.clip_id,
+            camera_id=c.camera_id,
+            start_time=c.start_time,
+            duration_seconds=c.duration_seconds,
+            size_bytes=c.size_bytes,
+            has_thumbnail=(
+                (c.find_thumbnail() is not None)
+                or generated_thumbnail_path(out_dir, c, size="small", cfg=thumb_cfg).exists()
+                or generated_thumbnail_path(out_dir, c, size="large", cfg=thumb_cfg).exists()
+            ),
+        )
+        for c in clips
+    ]
+
+
+@app.get("/api/clips/{clip_id}", response_model=ClipDetailOut)
+def get_clip(clip_id: str, _: AuthDep) -> ClipDetailOut:
+    out_dir = _out_dir()
+    db_path = default_db_path(out_dir)
+    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="clip not found")
+
+    return ClipDetailOut(
+        clip_id=clip.clip_id,
+        camera_id=clip.camera_id,
+        start_time=clip.start_time,
+        duration_seconds=clip.duration_seconds,
+        size_bytes=clip.size_bytes,
+        has_thumbnail=(clip.find_thumbnail() is not None),
+        filename=clip.filename,
+    )
+
+
+@app.get("/api/clips/{clip_id}/thumbnail")
+def get_thumbnail(
+    clip_id: str,
+    _: AuthDep,
+    size: Annotated[str, Query(pattern="^(small|large)$")] = "small",
+) -> FileResponse:
+    out_dir = _out_dir()
+    db_path = default_db_path(out_dir)
+    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="clip not found")
+
+    thumb = ensure_thumbnail(out_dir, clip, size=size)
+    if thumb is None:
+        raise HTTPException(status_code=404, detail="thumbnail not found")
+
+    media_type = "image/jpeg"
+    if thumb.suffix.lower() == ".webp":
+        media_type = "image/webp"
+    elif thumb.suffix.lower() == ".png":
+        media_type = "image/png"
+
+    return FileResponse(path=str(thumb), media_type=media_type)
+
+
+@app.get("/media/{clip_id}")
+def stream_media(clip_id: str, _: AuthDep) -> FileResponse:
+    out_dir = _out_dir()
+    db_path = default_db_path(out_dir)
+    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="clip not found")
+
+    return FileResponse(path=str(clip.abs_path), media_type="video/mp4")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("WEB_PORT", "8081")))

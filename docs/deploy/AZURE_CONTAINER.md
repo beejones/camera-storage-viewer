@@ -10,17 +10,22 @@ Current deployment model:
 
 ## Architecture
 
-ACI container group with 1 container:
+In Azure Container Instances (ACI), the most reliable model for this project is **two container groups**:
+
+1) **FTP group** (public ports are consumed by FTP control + passive range)
 
 | Container | Purpose | Ports |
 |-----------|---------|-------|
 | `camera-storage-viewer` | FTP server | 21 + passive range |
 
-Networking:
+2) **Web group** (viewer app + optional Caddy sidecar)
 
-```
-Internet → ACI public IP → FTP control (:21) + PASV data ports
-```
+| Container | Purpose | Ports |
+|-----------|---------|-------|
+| `camera-storage-viewer` | Viewer web API / UI | 8081 (internal), optionally 8081 public if deployed without Caddy |
+| `caddy` (optional) | HTTPS termination / reverse proxy | 80, 443 |
+
+Reason: ACI container groups can expose at most **5 public ports**. FTP typically consumes all 5 (21 + 4 passive), so HTTP/HTTPS must be a separate group.
 
 ## Prerequisites
 
@@ -36,7 +41,7 @@ Deployment reads `.env` first, then `.env.deploy` on top (deploy-time overrides)
 The deploy script auto-creates resources if they don't exist:
 
 ```bash
-python scripts/deploy/azure_deploy_container.py \
+python scripts/deploy/csv_deploy_container.py \
   --resource-group camera-storage-viewer-rg \
   --location westeurope
 ```
@@ -60,7 +65,7 @@ By default, deploy also uploads `.env` to Key Vault (controlled by `--upload-env
 ## Step 3 — Deploy to ACI
 
 ```bash
-python scripts/deploy/azure_deploy_container.py \
+python scripts/deploy/csv_deploy_container.py \
   --resource-group camera-storage-viewer-rg \
   --image ghcr.io/<your-gh-username>/camera-storage-viewer:latest \
   --env-file .env.deploy
@@ -104,13 +109,23 @@ Triggers on: **Workflow Dispatch** (Manual)
 2. **Secrets** (Environment or Repo):
    - `RUNTIME_ENV_DOTENV`: The **full content** of `.env` (excluding comments is fine).
 3. **Variables** (Environment or Repo):
+  - `AZURE_OIDC_APP_NAME` (Azure AD App Registration display name for OIDC)
    - `AZURE_CLIENT_ID` (OIDC App ID)
    - `AZURE_TENANT_ID`
    - `AZURE_SUBSCRIPTION_ID`
    - `AZURE_RESOURCE_GROUP` (e.g. `camera-storage-viewer-rg`)
    - `AZURE_CONTAINER_NAME` (e.g. `camera-storage-viewer`)
 
-The workflow builds/pushes `ghcr.io/<owner>/<repo>:latest` and then runs `scripts/deploy/azure_deploy_container.py`.
+The workflow builds/pushes `ghcr.io/<owner>/<repo>:latest` and then runs `scripts/deploy/csv_deploy_container.py`.
+
+### Deploy Customizations (Hooks)
+
+This repo supports a hooks-based customization system for viewer-specific deploy behavior.
+
+- Default hooks module: `scripts/deploy/deploy_customizations.py`
+- Override in CI by editing the deploy command to include:
+  - `--hooks-module <module-or-path>`
+  - `--hooks-soft-fail` (optional)
 
 ### Resetting GitHub Secrets
 

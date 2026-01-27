@@ -1,6 +1,7 @@
 services:
   # FTP-only container
   ftp:
+    x-deploy-role: ftp
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -33,6 +34,56 @@ services:
     networks:
       - internal
 
+  web:
+    x-deploy-role: app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: camera-storage-viewer-web
+    restart: unless-stopped
+    environment:
+      OUT_DIR: /data
+      WEB_PORT: 8081
+      VIEWER_AUTH_TOKEN: ${VIEWER_AUTH_TOKEN:-}
+      THUMBNAIL_GENERATION: ${THUMBNAIL_GENERATION:-true}
+    volumes:
+      - ./out:/data
+    command: ["sh", "-lc", "uvicorn src.web_api:app --host 0.0.0.0 --port ${WEB_PORT:-8081}"]
+    ports:
+      - "8081:8081"
+    networks:
+      - internal
+
+  # Reverse proxy for the viewer (HTTP/HTTPS termination)
+  # Local dev defaults to plain HTTP on :80 unless PUBLIC_DOMAIN is set.
+  caddy:
+    x-deploy-role: sidecar
+    image: ${CADDY_IMAGE:-caddy:2}
+    container_name: camera-storage-viewer-caddy
+    restart: unless-stopped
+    depends_on:
+      - web
+    entrypoint: ["/bin/sh", "/etc/caddy/caddy_start.sh"]
+    environment:
+      # If set, Caddy will try to get a real cert for this domain.
+      # If unset, Caddy serves HTTP on :80.
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+      UPSTREAM: web:8081
+    volumes:
+      - ./docker/caddy_start.sh:/etc/caddy/caddy_start.sh:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - internal
+
 networks:
   internal:
     driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

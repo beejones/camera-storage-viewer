@@ -1,4 +1,9 @@
-# Deprecated
+# Reference-only Caddyfile.
 #
-# This repository no longer deploys a web proxy sidecar. The current model is an
-# FTP-only container group in Azure Container Instances.
+# Local docker-compose uses docker/caddy_start.sh to generate a Caddyfile at runtime.
+# Azure deployments via scripts/deploy can also generate a Caddyfile internally.
+
+:80 {
+	auto_https off
+	reverse_proxy localhost:8081
+}

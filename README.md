@@ -2,6 +2,55 @@
 
 This repo is evolving into an Azure-hosted camera recorder + viewer.
 
+## Upstream (Project Origin)
+
+This repository started as a clone/fork of:
+- https://github.com/beejones/protected-azure-container
+
+It keeps the same overall deployment approach (Azure Container Instances + a small TLS proxy sidecar), but adapts it to the camera FTP ingest + viewer use-case.
+
+### How to pull updates from upstream
+
+One-liner (merge upstream `main` into your current branch):
+
+```bash
+git fetch upstream main && git merge upstream/main
+```
+
+1) Add an `upstream` remote (one-time):
+
+```bash
+git remote add upstream https://github.com/beejones/protected-azure-container.git
+git remote -v
+```
+
+2) Fetch upstream branches/tags:
+
+```bash
+git fetch upstream --prune
+```
+
+3) Update your current branch.
+
+Option A: merge upstream `main` into your current branch (preserves history):
+
+```bash
+git merge upstream/main
+```
+
+Option B: rebase your work on top of upstream `main` (cleaner linear history, but rewrites commits):
+
+```bash
+git rebase upstream/main
+```
+
+4) Resolve any conflicts, run tests, and push your branch:
+
+```bash
+python -m pytest
+git push
+```
+
 Prototype (this step): an **FTP server** you can point one or more cameras at (starting with Reolink), so we can validate uploads and networking (PASV, port ranges) end-to-end.
 
 ## Quick Start (Local FTP Prototype)
@@ -23,12 +72,79 @@ cp env.example .env
 docker compose up --build
 ```
 
-This starts the FTP server container.
+This starts:
+- the FTP server container (`ftp`)
+- the viewer backend API container (`web`) on `http://localhost:8081`
+
+Optional (recommended for a nicer local URL):
+- the Caddy reverse proxy (`caddy`) on `http://localhost/` (port 80)
+
+Note: The repo builds a single app image (FTP + viewer). docker-compose runs different commands for `ftp` vs `web`.
+
+If you only want FTP:
+
+```bash
+docker compose up --build ftp
+```
 
 FTP will be available at `localhost:21`.
 
+Viewer API will be available at `http://localhost:8081`.
+
+Viewer UI will be available at `http://localhost:8081/`.
+
+If you use the Caddy proxy (default in docker-compose), the Viewer UI is also available at:
+- `http://localhost/`
+
 Uploaded files land under:
 - `out/incoming/<camera_id>/...`
+
+## Ingest (Move uploads into library)
+
+Uploads initially land under `out/incoming/`. The viewer can index those directly, but for a stable library layout you can ingest them into:
+- `out/videos/<camera_id>/YYYY/MM/DD/...`
+
+Dry-run:
+
+```bash
+python3 scripts/ingest_once.py --out-dir ./out
+```
+
+Apply moves (default skips files newer than 60s):
+
+```bash
+python3 scripts/ingest_once.py --out-dir ./out --apply
+```
+
+## Viewer API (Local)
+
+List cameras:
+
+```bash
+curl http://localhost:8081/api/cameras
+```
+
+List clips for a day (UTC date):
+
+```bash
+curl "http://localhost:8081/api/cameras/<camera_id>/clips?date=2026-01-24"
+```
+
+Stream a clip:
+
+```bash
+curl -I http://localhost:8081/media/<clip_id>
+```
+
+Optional auth:
+- Set `VIEWER_AUTH_TOKEN` in `.env`
+- Send `Authorization: Bearer <token>`
+
+Note: the UI includes a local "Token" field (stored in your browser localStorage) and will send it as `Authorization: Bearer ...`.
+
+Thumbnails:
+- If a sidecar image exists next to a clip (e.g. `clip1.jpg` next to `clip1.mp4`), the API serves it.
+- Otherwise, the `web` container can generate thumbnails with ffmpeg when `THUMBNAIL_GENERATION=true`.
 
 ### Test Upload (without a camera)
 
@@ -51,7 +167,6 @@ Locally, [docker-compose.yml](docker-compose.yml) publishes these ports.
 In Azure, the ACI container group must expose the same ports.
 
 Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).
-Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).
 
 If PASV uploads fail in Azure, you usually need to set:
 - `FTP_PUBLIC_HOST` to your public DNS name or IP (so PASV replies contain a reachable address)
@@ -71,7 +186,8 @@ Safety:
 Dry-run: list files under `/data/incoming` older than a cutoff:
 
 ```bash
-python scripts/deploy/azure_storage_cleanup.py \
+
+python3 scripts/deploy/azure_storage_cleanup.py \
 	--resource-group camera-storage-viewer-rg \
 	--before-date 2026-01-01
 ```
@@ -79,7 +195,7 @@ python scripts/deploy/azure_storage_cleanup.py \
 Apply deletion:
 
 ```bash
-python scripts/deploy/azure_storage_cleanup.py \
+python3 scripts/deploy/azure_storage_cleanup.py \
 	--resource-group camera-storage-viewer-rg \
 	--before-date 2026-01-01 \
 	--apply
@@ -88,7 +204,7 @@ python scripts/deploy/azure_storage_cleanup.py \
 Delete everything under `/data/incoming`:
 
 ```bash
-python scripts/deploy/azure_storage_cleanup.py \
+python3 scripts/deploy/azure_storage_cleanup.py \
 	--resource-group camera-storage-viewer-rg \
 	--all \
 	--apply
@@ -118,6 +234,34 @@ Next steps are documented in [planning/camera-storage-viewer-plan.md](planning/c
 - ingest/index recordings into `out/videos/<camera_id>/...`
 - timeline playback + downloads in a web UI
 - retention policy (e.g. delete recordings older than 30 days)
+
+## Deployment Customization
+
+Downstream consumers can customize the deployment process (e.g., override images, resources, or patch YAML) using **Deployment Hooks**. This prevents the need to maintain a fork with modified core scripts.
+
+See: [docs/deploy/HOOKS.md](docs/deploy/HOOKS.md)
+
+## Migration Guide
+
+### Renamed Variables (Jan 2026)
+
+To support multiple containers, generic variable names have been updated:
+
+*   **`CONTAINER_IMAGE`** → **`APP_IMAGE`**
+*   **`DEFAULT_CPU_CORES`** → **`APP_CPU_CORES`**
+*   (CLI) `--cpu` → `--app-cpu` (old flag still works)
+*   (CLI) `--memory` → `--app-memory` (old flag still works)
+
+### New Sidecar/Other Variables
+
+*   `CADDY_IMAGE`, `CADDY_CPU_CORES`, `CADDY_MEMORY_GB`
+*   `OTHER_IMAGE`, `OTHER_CPU_CORES`, `OTHER_MEMORY_GB` (for generic third container)
+
+## Security Notes
+
+### `other` Container Volume Access
+
+If you deploy an `other` container (e.g., using `OTHER_IMAGE`), it shares the **same workspace volume** (`/home/coder/workspace`) as the main code-server container. This allows for convenient file sharing but implies that the `other` container has full read/write access to your code files. Ensure you trust the image used for the `other` container.
 
 ## License
 

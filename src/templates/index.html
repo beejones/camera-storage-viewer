@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Camera Storage Viewer</title>
+    <link rel="stylesheet" href="/static/viewer.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="sidebar__header">
+          <div class="brand">Camera Storage Viewer</div>
+          <div class="token">
+            <label class="token__label" for="tokenInput">Token</label>
+            <input id="tokenInput" class="token__input" type="password" placeholder="optional" />
+          </div>
+          <div class="date">
+            <label class="date__label" for="dateInput">Date (UTC)</label>
+            <input id="dateInput" class="date__input" type="date" />
+          </div>
+        </div>
+
+        <div class="sidebar__sectionTitle">Cameras</div>
+        <div id="cameraList" class="cameraList" aria-label="Cameras"></div>
+      </aside>
+
+      <main class="main">
+        <header class="main__header">
+          <div>
+            <div id="cameraTitle" class="cameraTitle">Select a camera</div>
+            <div id="cameraMeta" class="cameraMeta"></div>
+          </div>
+          <div class="actions">
+            <button id="refreshBtn" class="btn">Refresh</button>
+          </div>
+        </header>
+
+        <section class="stage">
+          <video id="player" class="player" controls playsinline></video>
+          <div id="emptyState" class="emptyState">Pick a camera and date to browse clips.</div>
+        </section>
+
+        <section class="timeline">
+          <div class="timeline__header">
+            <div class="timeline__title">Timeline</div>
+            <div class="timeline__hint">Click a clip to play. Hover for thumbnail.</div>
+          </div>
+          <div id="timelineBar" class="timelineBar" aria-label="Timeline"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="tooltip" class="tooltip" role="tooltip" hidden>
+      <div id="tooltipTime" class="tooltip__time"></div>
+      <img id="tooltipImg" class="tooltip__img" alt="thumbnail" />
+    </div>
+
+    <script src="/static/viewer.js"></script>
+  </body>
+</html>

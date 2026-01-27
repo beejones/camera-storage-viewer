@@ -51,19 +51,35 @@ class VarsEnum(str, Enum):
     ACME_EMAIL = "ACME_EMAIL"
 
     # Image / registry
-    CONTAINER_IMAGE = "CONTAINER_IMAGE"
+    APP_IMAGE = "APP_IMAGE"
     GHCR_PRIVATE = "GHCR_PRIVATE"
     GHCR_USERNAME = "GHCR_USERNAME"
 
     # Defaults / sizing
-    DEFAULT_CPU_CORES = "DEFAULT_CPU_CORES"
-    DEFAULT_MEMORY_GB = "DEFAULT_MEMORY_GB"
+    APP_CPU_CORES = "APP_CPU_CORES"
+    APP_MEMORY_GB = "APP_MEMORY_GB"
+
+    # Customization Hooks
+    DEPLOY_HOOKS_MODULE = "DEPLOY_HOOKS_MODULE"
+    DEPLOY_HOOKS_SOFT_FAIL = "DEPLOY_HOOKS_SOFT_FAIL"
+
+    # Caddy / Sidecar
+    CADDY_IMAGE = "CADDY_IMAGE"
+    CADDY_CPU_CORES = "CADDY_CPU_CORES"
+    CADDY_MEMORY_GB = "CADDY_MEMORY_GB"
+
+    # Other / Extra
+    OTHER_IMAGE = "OTHER_IMAGE"
+    OTHER_CPU_CORES = "OTHER_CPU_CORES"
+    OTHER_MEMORY_GB = "OTHER_MEMORY_GB"
 
     # Runtime
     BASIC_AUTH_USER = "BASIC_AUTH_USER"
 
     # Runtime (camera FTP)
     OUT_DIR = "OUT_DIR"
+    WEB_PORT = "WEB_PORT"
+    THUMBNAIL_GENERATION = "THUMBNAIL_GENERATION"
     FTP_BIND_HOST = "FTP_BIND_HOST"
     FTP_PORT = "FTP_PORT"
     FTP_PUBLIC_HOST = "FTP_PUBLIC_HOST"
@@ -84,6 +100,7 @@ class SecretsEnum(str, Enum):
 
     # Runtime
     BASIC_AUTH_HASH = "BASIC_AUTH_HASH"
+    VIEWER_AUTH_TOKEN = "VIEWER_AUTH_TOKEN"
 
     # Runtime (camera FTP)
     FTP_PASSWORD = "FTP_PASSWORD"
@@ -142,6 +159,24 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
         key=VarsEnum.OUT_DIR,
         mandatory=False,
         default="/data",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.WEB_PORT,
+        mandatory=False,
+        default="8081",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.VIEWER_AUTH_TOKEN,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.THUMBNAIL_GENERATION,
+        mandatory=False,
+        default="true",
         targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
     ),
     EnvKeySpec(
@@ -290,7 +325,13 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(
-        key=VarsEnum.CONTAINER_IMAGE,
+        key=VarsEnum.CADDY_IMAGE,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.APP_IMAGE,
         mandatory=True,
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
@@ -313,15 +354,63 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_SECRET}),
     ),
     EnvKeySpec(
-        key=VarsEnum.DEFAULT_CPU_CORES,
+        key=VarsEnum.APP_CPU_CORES,
         mandatory=False,
         default="1.0",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(
-        key=VarsEnum.DEFAULT_MEMORY_GB,
+        key=VarsEnum.APP_MEMORY_GB,
         mandatory=False,
         default="2.0",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.CADDY_IMAGE,
+        mandatory=False,
+        default="caddy:2-alpine",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.CADDY_CPU_CORES,
+        mandatory=False,
+        default="0.5",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.CADDY_MEMORY_GB,
+        mandatory=False,
+        default="0.5",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.OTHER_IMAGE,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.OTHER_CPU_CORES,
+        mandatory=False,
+        default="0.25",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.OTHER_MEMORY_GB,
+        mandatory=False,
+        default="0.5",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.DEPLOY_HOOKS_MODULE,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.DEPLOY_HOOKS_SOFT_FAIL,
+        mandatory=False,
+        default="false",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(
@@ -365,6 +454,42 @@ def parse_dotenv_file(path: Path) -> dict[str, str]:
         val = "" if v is None else str(v).strip()
         kv[key] = val
     return kv
+
+
+def normalize_legacy_deploy_keys(kv: Mapping[str, str]) -> tuple[dict[str, str], list[str]]:
+    """Normalize legacy deploy keys to current schema keys.
+
+    This keeps schema validation strict (unknown keys still fail), while allowing
+    deploy entrypoints to accept a small set of historical keys found in older
+    `.env.deploy` files.
+
+    Returns: (normalized_kv, warnings)
+    """
+
+    legacy_map = {
+        # Older deploy scripts used these names.
+        "CONTAINER_IMAGE": VarsEnum.APP_IMAGE.value,
+        "DEFAULT_CPU_CORES": VarsEnum.APP_CPU_CORES.value,
+        "DEFAULT_MEMORY_GB": VarsEnum.APP_MEMORY_GB.value,
+    }
+
+    out = dict(kv)
+    warnings: list[str] = []
+
+    for old_key, new_key in legacy_map.items():
+        if old_key not in out:
+            continue
+
+        old_val = str(out.get(old_key) or "").strip()
+        new_val = str(out.get(new_key) or "").strip()
+
+        if old_val and not new_val:
+            out[new_key] = old_val
+
+        warnings.append(f"Legacy key '{old_key}' is deprecated; use '{new_key}'")
+        out.pop(old_key, None)
+
+    return out, warnings
 
 
 def _format_dotenv_value(value: str) -> str:
