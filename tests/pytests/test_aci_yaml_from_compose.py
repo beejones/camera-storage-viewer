@@ -23,6 +23,7 @@ def test_generate_yaml_with_command_and_ports():
         app_cpu_cores=1.0,
         app_memory_gb=1.5,
         share_workspace="workspace",
+        data_share_name="workspace",
         caddy_data_share_name="caddy-data",
         caddy_config_share_name="caddy-config",
         caddy_image="caddy:latest",
@@ -40,6 +41,7 @@ def test_generate_yaml_with_command_and_ports():
     
     # Verify command is present
     assert "command:" in yaml_text
+    assert "- /usr/local/bin/azure_start.sh" in yaml_text
     assert "- python" in yaml_text
     assert "- main.py" in yaml_text
     assert "- --port" in yaml_text
@@ -51,6 +53,13 @@ def test_generate_yaml_with_command_and_ports():
     
     # Verify legacy fallback is NOT present because WEB_PORT replaced it
     assert "name: CODE_SERVER_PORT" not in yaml_text
+
+    # Verify /data is mounted for the app container when requested
+    app_container_yaml = yaml_text.split("- name: tls-proxy")[0]
+    assert "- name: data-volume" in app_container_yaml
+    assert "mountPath: /data" in app_container_yaml
+    assert "- name: data-volume" in yaml_text
+    assert "shareName: workspace" in yaml_text
 
 def test_generate_yaml_no_command_injects_nothing():
     yaml_text = yaml_helpers.generate_deploy_yaml(

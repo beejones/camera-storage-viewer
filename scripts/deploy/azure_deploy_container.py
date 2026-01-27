@@ -126,6 +126,7 @@ def generate_deploy_yaml(
     app_cpu_cores: float,
     app_memory_gb: float,
     share_workspace: str,
+    data_share_name: str | None = None,
     caddy_data_share_name: str,
     caddy_config_share_name: str,
     caddy_image: str,
@@ -162,6 +163,7 @@ def generate_deploy_yaml(
         app_cpu_cores=app_cpu_cores,
         app_memory_gb=app_memory_gb,
         share_workspace=share_workspace,
+        data_share_name=data_share_name,
         caddy_data_share_name=caddy_data_share_name,
         caddy_config_share_name=caddy_config_share_name,
         caddy_image=caddy_image,
@@ -193,6 +195,14 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     parser.add_argument("--keyvault-name", default=None)
 
     parser.add_argument("--share-workspace", default=None)
+    parser.add_argument(
+        "--data-share-name",
+        default=None,
+        help=(
+            "Azure Files share name to mount at /data for the app container. "
+            "If omitted, the deploy script will mount --share-workspace at /data when docker-compose.yml indicates the app uses /data."
+        ),
+    )
     parser.add_argument("--caddy-data-share-name", default=None)
     parser.add_argument("--caddy-config-share-name", default=None)
 
@@ -527,6 +537,18 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
                 web_port_env = compose_helpers.get_env_var(app_service, "WEB_PORT")
                 if web_port_env:
                     config_extra_env["WEB_PORT"] = web_port_env
+
+                # Detect whether the app expects durable storage under /data.
+                # camera-storage-viewer uses OUT_DIR=/data and mounts a volume at /data in docker-compose.
+                out_dir_env = compose_helpers.get_env_var(app_service, "OUT_DIR")
+                volume_targets = compose_helpers.get_volume_targets(app_service)
+                uses_data_mount = (
+                    (str(out_dir_env or "").strip() == "/data")
+                    or any(str(t).strip() == "/data" for t in volume_targets)
+                )
+                if uses_data_mount:
+                    # Be explicit in case the runtime .env doesn't contain OUT_DIR.
+                    config_extra_env.setdefault("OUT_DIR", "/data")
                 
                 # If ports are missing, try legacy fallback
                 if not config_app_ports:
@@ -786,6 +808,12 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         share_workspace = shares_to_ensure[0]
         caddy_data_share = shares_to_ensure[1]
         caddy_config_share = shares_to_ensure[2]
+
+        # If the compose app uses /data, mount a share there so the app can see uploads/index DB.
+        # Default: reuse the workspace share to avoid introducing another required Azure Files share.
+        data_share_name: str | None = None
+        if config_extra_env.get("OUT_DIR") == "/data":
+            data_share_name = (args.data_share_name or share_workspace).strip() or None
 
         image = resolve_value(
             name="image",
@@ -1213,6 +1241,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             app_cpu_cores=plan.app_cpu,
             app_memory_gb=plan.app_memory,
             share_workspace=share_workspace,
+            data_share_name=data_share_name,
             caddy_data_share_name=caddy_data_share,
             caddy_config_share_name=caddy_config_share,
             caddy_image=plan.caddy_image,
