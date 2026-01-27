@@ -11,6 +11,12 @@ It keeps the same overall deployment approach (Azure Container Instances + a sma
 
 ### How to pull updates from upstream
 
+One-liner (merge upstream `main` into your current branch):
+
+```bash
+git fetch upstream main && git merge upstream/main
+```
+
 1) Add an `upstream` remote (one-time):
 
 ```bash
