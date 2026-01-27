@@ -227,31 +227,20 @@ function renderTimeline() {
   };
 
   // Filmstrip thumbnails, positioned on the same time scale as the track.
-  // We do a simple lane packing so thumbnails don't overlap.
+  // Single-line strip: keep all thumbnails on one row.
   const itemWidthPx = 130;
-  const itemGapPx = 10;
   const laneHeightPx = 96;
-  const laneLastRight = [];
 
   for (const clip of clips) {
     const frac = timelineXFor(clip.start_time);
     let leftPx = Math.round(frac * widthPx);
     leftPx = Math.max(0, Math.min(leftPx, Math.max(0, widthPx - itemWidthPx)));
-    const rightPx = leftPx + itemWidthPx;
-
-    let lane = 0;
-    while (lane < laneLastRight.length) {
-      if (leftPx >= laneLastRight[lane] + itemGapPx) break;
-      lane += 1;
-    }
-    if (lane === laneLastRight.length) laneLastRight.push(-Infinity);
-    laneLastRight[lane] = Math.max(laneLastRight[lane], rightPx);
 
     const item = document.createElement('div');
     item.className = 'filmItem' + (clip.clip_id === state.activeClipId ? ' filmItem--active' : '');
     item.dataset.clipId = clip.clip_id;
     item.style.left = `${leftPx}px`;
-    item.style.top = `${lane * laneHeightPx}px`;
+    item.style.top = `0px`;
 
     const thumb = document.createElement('div');
     thumb.className = 'filmItem__thumb';
@@ -285,8 +274,7 @@ function renderTimeline() {
     film.appendChild(item);
   }
 
-  const lanes = Math.max(1, laneLastRight.length);
-  film.style.height = `${lanes * laneHeightPx}px`;
+  film.style.height = `${laneHeightPx}px`;
 }
 
 function showTooltip(evt, clip) {
