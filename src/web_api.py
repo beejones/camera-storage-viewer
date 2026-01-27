@@ -55,19 +55,6 @@ def _out_dir() -> Path:
     env = _merged_env()
     return Path(str(env.get("OUT_DIR", "/data")).strip() or "/data")
 
-
-def _require_token(request: Request) -> None:
-    env = _merged_env()
-    token = str(env.get("VIEWER_AUTH_TOKEN", "")).strip()
-    if not token:
-        return
-    auth = request.headers.get("authorization") or ""
-    if auth.strip() != f"Bearer {token}":
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
-AuthDep = Annotated[None, Depends(_require_token)]
-
 app = FastAPI(title="Camera Storage Viewer")
 
 _BASE_DIR = Path(__file__).resolve().parent
@@ -86,7 +73,7 @@ def healthz() -> dict[str, str]:
 
 
 @app.get("/api/cameras", response_model=list[CameraOut])
-def list_cameras(_: AuthDep) -> list[CameraOut]:
+def list_cameras() -> list[CameraOut]:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
     cameras: list[CameraOut] = []
@@ -104,7 +91,6 @@ def list_cameras(_: AuthDep) -> list[CameraOut]:
 @app.get("/api/cameras/{camera_id}/clips", response_model=list[ClipOut])
 def list_clips(
     camera_id: str,
-    _: AuthDep,
     day: Annotated[date, Query(alias="date")],
 ) -> list[ClipOut]:
     out_dir = _out_dir()
@@ -130,7 +116,7 @@ def list_clips(
 
 
 @app.get("/api/clips/{clip_id}", response_model=ClipDetailOut)
-def get_clip(clip_id: str, _: AuthDep) -> ClipDetailOut:
+def get_clip(clip_id: str) -> ClipDetailOut:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
     clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
@@ -151,7 +137,6 @@ def get_clip(clip_id: str, _: AuthDep) -> ClipDetailOut:
 @app.get("/api/clips/{clip_id}/thumbnail")
 def get_thumbnail(
     clip_id: str,
-    _: AuthDep,
     size: Annotated[str, Query(pattern="^(small|large)$")] = "small",
 ) -> FileResponse:
     out_dir = _out_dir()
@@ -174,7 +159,7 @@ def get_thumbnail(
 
 
 @app.get("/media/{clip_id}")
-def stream_media(clip_id: str, _: AuthDep) -> FileResponse:
+def stream_media(clip_id: str) -> FileResponse:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
     clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)

@@ -44,7 +44,6 @@ services:
     environment:
       OUT_DIR: /data
       WEB_PORT: 8081
-      VIEWER_AUTH_TOKEN: ${VIEWER_AUTH_TOKEN:-}
       THUMBNAIL_GENERATION: ${THUMBNAIL_GENERATION:-true}
     volumes:
       - ./out:/data
