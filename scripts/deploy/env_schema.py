@@ -59,6 +59,10 @@ class VarsEnum(str, Enum):
     APP_CPU_CORES = "APP_CPU_CORES"
     APP_MEMORY_GB = "APP_MEMORY_GB"
 
+    # FTP container group sizing (ACI)
+    FTP_CPU_CORES = "FTP_CPU_CORES"
+    FTP_MEMORY_GB = "FTP_MEMORY_GB"
+
     # Customization Hooks
     DEPLOY_HOOKS_MODULE = "DEPLOY_HOOKS_MODULE"
     DEPLOY_HOOKS_SOFT_FAIL = "DEPLOY_HOOKS_SOFT_FAIL"
@@ -356,6 +360,18 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         key=VarsEnum.APP_MEMORY_GB,
         mandatory=False,
         default="2.0",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_CPU_CORES,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.FTP_MEMORY_GB,
+        mandatory=False,
+        default=None,
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(

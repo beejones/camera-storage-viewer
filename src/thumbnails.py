@@ -64,6 +64,11 @@ def _ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+def can_generate_thumbnails() -> bool:
+    cfg = load_thumbnail_config()
+    return cfg.enabled and _ffmpeg_available()
+
+
 def _run_ffmpeg_extract(*, input_path: Path, output_path: Path, width: int) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -94,7 +99,11 @@ def ensure_thumbnail(out_dir: Path, clip: DbClip, *, size: str) -> Path | None:
     # Prefer sidecar thumbnails if present.
     sidecar = clip.find_thumbnail()
     if sidecar is not None:
-        return sidecar
+        try:
+            if sidecar.stat().st_size > 0:
+                return sidecar
+        except FileNotFoundError:
+            pass
 
     cfg = load_thumbnail_config()
     if not cfg.enabled:
@@ -104,8 +113,11 @@ def ensure_thumbnail(out_dir: Path, clip: DbClip, *, size: str) -> Path | None:
         return None
 
     target = generated_thumbnail_path(out_dir, clip, size=size, cfg=cfg)
-    if target.exists() and target.is_file():
-        return target
+    try:
+        if target.exists() and target.is_file() and target.stat().st_size > 0:
+            return target
+    except FileNotFoundError:
+        pass
 
     width = 320 if size == "small" else 640
 

@@ -46,6 +46,16 @@ def _get_env_int(ctx: DeployContext, key: str, *, default: int | None = None) ->
         raise ValueError(f"{key} must be an int, got {raw!r}")
 
 
+def _get_env_float(ctx: DeployContext, key: str, *, default: float | None = None) -> float | None:
+    raw = _get_env_str(ctx, key)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"{key} must be a float, got {raw!r}")
+
+
 def _aci_port_limit_validate(*, ftp_port: int, passive_min: int, passive_max: int) -> None:
     if ftp_port < 1 or ftp_port > 65535:
         raise ValueError(f"FTP_PORT must be 1-65535, got {ftp_port}")
@@ -298,6 +308,14 @@ class _ViewerHooks:
         ftp_group_name = f"{name}-ftp"
         ftp_dns_label = f"{plan.dns_label}-ftp"
 
+        ftp_cpu = _get_env_float(ctx, VarsEnum.FTP_CPU_CORES.value, default=None)
+        ftp_memory = _get_env_float(ctx, VarsEnum.FTP_MEMORY_GB.value, default=None)
+
+        if ftp_cpu is None:
+            ftp_cpu = plan.app_cpu
+        if ftp_memory is None:
+            ftp_memory = plan.app_memory
+
         print(
             f"ℹ️  [deploy] docker-compose defines ftp='{ftp_service_name}'. Ensuring ACI container group '{ftp_group_name}' ({ftp_port}, {passive_min}-{passive_max})"
         )
@@ -318,8 +336,8 @@ class _ViewerHooks:
             storage_key=storage_key,
             kv_name=kv_name,
             dns_label=ftp_dns_label,
-            cpu_cores=plan.app_cpu,
-            memory_gb=plan.app_memory,
+            cpu_cores=ftp_cpu,
+            memory_gb=ftp_memory,
             data_share_name=data_share_name,
             ftp_port=ftp_port,
             ftp_passive_port_min=passive_min,

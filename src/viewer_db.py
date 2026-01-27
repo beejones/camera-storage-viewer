@@ -28,7 +28,11 @@ class DbClip:
         for ext in (".jpg", ".jpeg", ".webp", ".png"):
             candidate = self.abs_path.with_suffix(ext)
             if candidate.exists() and candidate.is_file():
-                return candidate
+                try:
+                    if candidate.stat().st_size > 0:
+                        return candidate
+                except FileNotFoundError:
+                    continue
         return None
 
 
@@ -129,12 +133,19 @@ def update_index_from_storage(*, out_dir: Path, db_path: Path) -> None:
                 continue
             camera_id = camera_dir.name
             for abs_path in _iter_video_files(camera_dir):
-                st = abs_path.stat()
+                try:
+                    st = abs_path.stat()
+                except FileNotFoundError:
+                    # Files can disappear between directory enumeration and stat (uploads/renames).
+                    continue
+                if st.st_size <= 0:
+                    continue
                 rel_path = str(abs_path.relative_to(out_dir))
                 clip_id = _clip_id_for(rel_path, st.st_size, st.st_mtime_ns)
                 start_time = _utc_from_timestamp(st.st_mtime).isoformat()
-                duration = _probe_duration_seconds(abs_path)
-                upserts.append((clip_id, camera_id, rel_path, start_time, duration, int(st.st_size), int(st.st_mtime_ns)))
+                # Duration probing via ffprobe can be slow, especially on network filesystems.
+                # We keep duration optional (nullable) and do not probe during indexing.
+                upserts.append((clip_id, camera_id, rel_path, start_time, None, int(st.st_size), int(st.st_mtime_ns)))
 
     with _connect(db_path) as conn:
         conn.executemany(
@@ -153,22 +164,32 @@ def update_index_from_storage(*, out_dir: Path, db_path: Path) -> None:
         )
 
 
-def list_cameras(*, out_dir: Path, db_path: Path) -> list[str]:
+def list_cameras(*, out_dir: Path, db_path: Path, refresh_index: bool = True) -> list[str]:
     init_db(db_path)
-    update_index_from_storage(out_dir=out_dir, db_path=db_path)
+    if refresh_index:
+        update_index_from_storage(out_dir=out_dir, db_path=db_path)
 
     with _connect(db_path) as conn:
-        rows = conn.execute("SELECT DISTINCT camera_id FROM clips ORDER BY camera_id").fetchall()
+        rows = conn.execute(
+            "SELECT DISTINCT camera_id FROM clips WHERE size_bytes > 0 ORDER BY camera_id"
+        ).fetchall()
         return [str(r["camera_id"]) for r in rows]
 
 
-def last_upload_time_for_camera(*, out_dir: Path, db_path: Path, camera_id: str) -> datetime | None:
+def last_upload_time_for_camera(
+    *,
+    out_dir: Path,
+    db_path: Path,
+    camera_id: str,
+    refresh_index: bool = True,
+) -> datetime | None:
     init_db(db_path)
-    update_index_from_storage(out_dir=out_dir, db_path=db_path)
+    if refresh_index:
+        update_index_from_storage(out_dir=out_dir, db_path=db_path)
 
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT start_time_utc FROM clips WHERE camera_id=? ORDER BY start_time_utc DESC LIMIT 1",
+            "SELECT start_time_utc FROM clips WHERE camera_id=? AND size_bytes > 0 ORDER BY start_time_utc DESC LIMIT 1",
             (camera_id,),
         ).fetchone()
         if row is None:
@@ -176,9 +197,17 @@ def last_upload_time_for_camera(*, out_dir: Path, db_path: Path, camera_id: str)
         return datetime.fromisoformat(str(row["start_time_utc"]))
 
 
-def list_clips_for_day(*, out_dir: Path, db_path: Path, camera_id: str, day: date) -> list[DbClip]:
+def list_clips_for_day(
+    *,
+    out_dir: Path,
+    db_path: Path,
+    camera_id: str,
+    day: date,
+    refresh_index: bool = True,
+) -> list[DbClip]:
     init_db(db_path)
-    update_index_from_storage(out_dir=out_dir, db_path=db_path)
+    if refresh_index:
+        update_index_from_storage(out_dir=out_dir, db_path=db_path)
 
     day_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
@@ -188,7 +217,7 @@ def list_clips_for_day(*, out_dir: Path, db_path: Path, camera_id: str, day: dat
             """
             SELECT clip_id, camera_id, rel_path, start_time_utc, duration_seconds, size_bytes, mtime_ns
             FROM clips
-            WHERE camera_id=? AND start_time_utc BETWEEN ? AND ?
+            WHERE camera_id=? AND size_bytes > 0 AND start_time_utc BETWEEN ? AND ?
             ORDER BY start_time_utc
             """,
             (camera_id, day_start.isoformat(), day_end.isoformat()),
@@ -197,6 +226,12 @@ def list_clips_for_day(*, out_dir: Path, db_path: Path, camera_id: str, day: dat
     clips: list[DbClip] = []
     for r in rows:
         abs_path = out_dir / str(r["rel_path"])
+        try:
+            st = abs_path.stat()
+        except FileNotFoundError:
+            continue
+        if st.st_size <= 0:
+            continue
         clips.append(
             DbClip(
                 clip_id=str(r["clip_id"]),
@@ -212,13 +247,20 @@ def list_clips_for_day(*, out_dir: Path, db_path: Path, camera_id: str, day: dat
     return clips
 
 
-def resolve_clip_by_id(*, out_dir: Path, db_path: Path, clip_id: str) -> DbClip | None:
+def resolve_clip_by_id(
+    *,
+    out_dir: Path,
+    db_path: Path,
+    clip_id: str,
+    refresh_index: bool = True,
+) -> DbClip | None:
     init_db(db_path)
-    update_index_from_storage(out_dir=out_dir, db_path=db_path)
+    if refresh_index:
+        update_index_from_storage(out_dir=out_dir, db_path=db_path)
 
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT clip_id, camera_id, rel_path, start_time_utc, duration_seconds, size_bytes, mtime_ns FROM clips WHERE clip_id=?",
+            "SELECT clip_id, camera_id, rel_path, start_time_utc, duration_seconds, size_bytes, mtime_ns FROM clips WHERE clip_id=? AND size_bytes > 0",
             (clip_id,),
         ).fetchone()
 
@@ -226,6 +268,19 @@ def resolve_clip_by_id(*, out_dir: Path, db_path: Path, clip_id: str) -> DbClip 
         return None
 
     abs_path = out_dir / str(row["rel_path"])
+    try:
+        st = abs_path.stat()
+    except FileNotFoundError:
+        # Best-effort cleanup of stale DB entries.
+        with _connect(db_path) as conn:
+            conn.execute("DELETE FROM clips WHERE clip_id=?", (clip_id,))
+        return None
+
+    if st.st_size <= 0:
+        # Treat zero-byte files as missing/incomplete uploads.
+        with _connect(db_path) as conn:
+            conn.execute("DELETE FROM clips WHERE clip_id=?", (clip_id,))
+        return None
     return DbClip(
         clip_id=str(row["clip_id"]),
         camera_id=str(row["camera_id"]),

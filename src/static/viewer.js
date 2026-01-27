@@ -4,7 +4,17 @@ const state = {
   cameraId: null,
   date: null,
   clips: [],
+  zoomPxPerHour: 240,
+  playheadIso: null,
+  activeClipId: null,
 };
+
+function fmtTs(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+}
 
 async function apiGetJson(url) {
   const resp = await fetch(url);
@@ -25,65 +35,258 @@ function setCameraStatus(message, kind) {
   statusEl.classList.toggle('cameraListStatus--error', kind === 'error');
 }
 
-function fmtTs(iso) {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    return d.toISOString().replace('T', ' ').replace('Z', 'Z');
-  } catch {
-    return String(iso);
-  }
-}
-
 function setEmptyStateVisible(visible) {
-  $('emptyState').style.display = visible ? 'grid' : 'none';
+  const el = $('emptyState');
+  if (!el) return;
+  el.style.display = visible ? 'grid' : 'none';
 }
 
 function setSelectedCamera(cameraId) {
   state.cameraId = cameraId;
+  state.activeClipId = null;
+
   for (const el of document.querySelectorAll('.cameraItem')) {
     el.classList.toggle('cameraItem--active', el.dataset.cameraId === cameraId);
   }
 }
 
-function timelineXFor(clipStartIso) {
-  // Map the clip start time to [0..1] within the selected day (UTC).
-  const start = new Date(`${state.date}T00:00:00.000Z`).getTime();
-  const end = new Date(`${state.date}T23:59:59.999Z`).getTime();
-  const t = new Date(clipStartIso).getTime();
-  const frac = (t - start) / (end - start);
+function timelineWidthPx() {
+  return Math.max(24 * state.zoomPxPerHour, 24 * 80);
+}
+
+function _dayStartMs() {
+  return new Date(`${state.date}T00:00:00.000Z`).getTime();
+}
+
+function timelineXFor(iso) {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return 0;
+  const start = _dayStartMs();
+  const end = start + 24 * 60 * 60 * 1000;
+  const frac = (t - start) / Math.max(1, end - start);
   return Math.max(0, Math.min(1, frac));
 }
 
+function isoForFrac(frac) {
+  const start = _dayStartMs();
+  const t = start + (Math.max(0, Math.min(1, frac)) * 24 * 60 * 60 * 1000);
+  return new Date(t).toISOString();
+}
+
+function fracForClientXIn(el, clientX) {
+  const rect = el.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const frac = x / Math.max(1, rect.width);
+  return Math.max(0, Math.min(1, frac));
+}
+
+function chooseTickMinutes() {
+  // Dynamic tick density based on zoom.
+  const pxPerHour = state.zoomPxPerHour;
+  if (pxPerHour >= 800) return { tick: 5, label: 60 };
+  if (pxPerHour >= 360) return { tick: 10, label: 60 };
+  if (pxPerHour >= 200) return { tick: 15, label: 120 };
+  return { tick: 30, label: 180 };
+}
+
+function renderTimelineScale() {
+  const scale = $('timelineScale');
+  if (!scale) return;
+  scale.innerHTML = '';
+
+  const widthPx = timelineWidthPx();
+  scale.style.width = `${widthPx}px`;
+
+  const { tick, label } = chooseTickMinutes();
+  const totalMinutes = 24 * 60;
+
+  for (let m = 0; m <= totalMinutes; m += tick) {
+    const x = (m / totalMinutes) * widthPx;
+
+    const isHour = m % 60 === 0;
+    const isLabel = m % label === 0;
+
+    const tickEl = document.createElement('div');
+    tickEl.className = 'timelineTick' + (isHour ? ' timelineTick--major' : '');
+    tickEl.style.left = `${x}px`;
+    scale.appendChild(tickEl);
+
+    if (isLabel) {
+      const h = Math.floor(m / 60);
+      const labelEl = document.createElement('div');
+      labelEl.className = 'timelineTickLabel';
+      labelEl.style.left = `${x}px`;
+      labelEl.textContent = `${String(h).padStart(2, '0')}:00`;
+      scale.appendChild(labelEl);
+    }
+  }
+}
+
 function renderTimeline() {
-  const bar = $('timelineBar');
-  bar.innerHTML = '';
+  const scroll = $('timelineScroll');
+  const inner = $('timelineInner');
+  const track = $('timelineTrack');
+  const film = $('timelineFilmstrip');
+  if (!scroll || !inner || !track || !film) return;
 
-  const width = bar.clientWidth;
-  const minBlockPx = 18;
+  renderTimelineScale();
 
-  for (const clip of state.clips) {
-    const x = timelineXFor(clip.start_time);
+  track.innerHTML = '';
+  film.innerHTML = '';
 
-    const block = document.createElement('div');
-    block.className = 'clipBlock';
-    block.style.left = `${Math.floor(x * width)}px`;
-    block.style.width = `${minBlockPx}px`;
-    block.dataset.clipId = clip.clip_id;
-    block.dataset.startTime = clip.start_time;
+  const widthPx = timelineWidthPx();
+  inner.style.width = `${widthPx}px`;
+  track.style.width = `${widthPx}px`;
+  film.style.width = `${widthPx}px`;
 
-    block.addEventListener('click', () => {
-      const player = $('player');
-      player.src = `/media/${clip.clip_id}`;
-      player.play().catch(() => {});
-      setEmptyStateVisible(false);
+  const clips = [...(state.clips || [])].sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+
+  const playClip = (clip) => {
+    const player = $('player');
+    state.activeClipId = clip.clip_id;
+    state.playheadIso = clip.start_time;
+    player.src = `/media/${clip.clip_id}`;
+    player.play().catch(() => {});
+    setEmptyStateVisible(false);
+    renderTimeline();
+  };
+
+  const downloadClip = (clip) => {
+    const a = document.createElement('a');
+    a.href = `/media/${clip.clip_id}`;
+    a.download = `${clip.camera_id || 'camera'}_${clip.clip_id}.mp4`;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  // Segments on the track.
+  for (const clip of clips) {
+    const frac = timelineXFor(clip.start_time);
+    const left = frac * widthPx;
+    const dur = (clip.duration_seconds && Number.isFinite(clip.duration_seconds)) ? clip.duration_seconds : 60;
+    const w = Math.max(6, Math.min(120, (dur / 3600) * state.zoomPxPerHour));
+
+    const seg = document.createElement('div');
+    seg.className = 'timelineSegment';
+    seg.style.left = `${left}px`;
+    seg.style.width = `${w}px`;
+    seg.dataset.clipId = clip.clip_id;
+
+    seg.addEventListener('click', () => playClip(clip));
+    seg.addEventListener('mousemove', (e) => showTooltip(e, clip));
+    seg.addEventListener('mouseleave', hideTooltip);
+    seg.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      downloadClip(clip);
     });
 
-    block.addEventListener('mousemove', (e) => showTooltip(e, clip));
-    block.addEventListener('mouseleave', hideTooltip);
-
-    bar.appendChild(block);
+    track.appendChild(seg);
   }
+
+  // Playhead.
+  const playhead = document.createElement('div');
+  playhead.className = 'timelinePlayhead';
+  const playheadFrac = state.playheadIso ? timelineXFor(state.playheadIso) : 0;
+  playhead.style.left = `${playheadFrac * widthPx}px`;
+  track.appendChild(playhead);
+
+  // Click/drag to scrub.
+  let dragging = false;
+  const setPlayheadFromClientX = (clientX) => {
+    const frac = fracForClientXIn(track, clientX);
+    state.playheadIso = isoForFrac(frac);
+    playhead.style.left = `${frac * widthPx}px`;
+  };
+
+  track.onpointerdown = (e) => {
+    dragging = true;
+    track.setPointerCapture(e.pointerId);
+    setPlayheadFromClientX(e.clientX);
+  };
+  track.onpointermove = (e) => {
+    if (!dragging) return;
+    setPlayheadFromClientX(e.clientX);
+  };
+  track.onpointerup = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    track.releasePointerCapture(e.pointerId);
+
+    // Snap to closest clip at/before playhead.
+    const t = new Date(state.playheadIso).getTime();
+    let best = null;
+    for (const c of clips) {
+      const ct = new Date(c.start_time).getTime();
+      if (ct <= t) best = c;
+      else break;
+    }
+    if (!best && clips.length) best = clips[0];
+    if (best) playClip(best);
+  };
+
+  // Filmstrip thumbnails, positioned on the same time scale as the track.
+  // We do a simple lane packing so thumbnails don't overlap.
+  const itemWidthPx = 130;
+  const itemGapPx = 10;
+  const laneHeightPx = 96;
+  const laneLastRight = [];
+
+  for (const clip of clips) {
+    const frac = timelineXFor(clip.start_time);
+    let leftPx = Math.round(frac * widthPx);
+    leftPx = Math.max(0, Math.min(leftPx, Math.max(0, widthPx - itemWidthPx)));
+    const rightPx = leftPx + itemWidthPx;
+
+    let lane = 0;
+    while (lane < laneLastRight.length) {
+      if (leftPx >= laneLastRight[lane] + itemGapPx) break;
+      lane += 1;
+    }
+    if (lane === laneLastRight.length) laneLastRight.push(-Infinity);
+    laneLastRight[lane] = Math.max(laneLastRight[lane], rightPx);
+
+    const item = document.createElement('div');
+    item.className = 'filmItem' + (clip.clip_id === state.activeClipId ? ' filmItem--active' : '');
+    item.dataset.clipId = clip.clip_id;
+    item.style.left = `${leftPx}px`;
+    item.style.top = `${lane * laneHeightPx}px`;
+
+    const thumb = document.createElement('div');
+    thumb.className = 'filmItem__thumb';
+    if (clip.has_thumbnail) {
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = `/api/clips/${clip.clip_id}/thumbnail?size=small`;
+      img.onerror = () => {
+        try { img.remove(); } catch (_) {}
+      };
+      thumb.appendChild(img);
+    }
+
+    const meta = document.createElement('div');
+    meta.className = 'filmItem__meta';
+    const t = new Date(clip.start_time);
+    meta.textContent = `${String(t.getUTCHours()).padStart(2, '0')}:${String(t.getUTCMinutes()).padStart(2, '0')}:${String(t.getUTCSeconds()).padStart(2, '0')}`;
+
+    item.appendChild(thumb);
+    item.appendChild(meta);
+
+    item.addEventListener('click', () => playClip(clip));
+    item.addEventListener('mousemove', (e) => showTooltip(e, clip));
+    item.addEventListener('mouseleave', hideTooltip);
+    item.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      downloadClip(clip);
+    });
+
+    film.appendChild(item);
+  }
+
+  const lanes = Math.max(1, laneLastRight.length);
+  film.style.height = `${lanes * laneHeightPx}px`;
 }
 
 function showTooltip(evt, clip) {
@@ -207,6 +410,30 @@ function init() {
   $('refreshBtn').addEventListener('click', () => {
     loadCameras().then(loadClips).catch(console.error);
   });
+
+  const zoom = $('timelineZoom');
+  const scaleSelect = $('timelineScaleSelect');
+  if (zoom) {
+    zoom.value = String(state.zoomPxPerHour);
+    zoom.addEventListener('input', (e) => {
+      state.zoomPxPerHour = Number(e.target.value) || 240;
+      if (scaleSelect) {
+        scaleSelect.value = String(state.zoomPxPerHour);
+      }
+      renderTimeline();
+    });
+  }
+
+  if (scaleSelect) {
+    scaleSelect.value = String(state.zoomPxPerHour);
+    scaleSelect.addEventListener('change', (e) => {
+      state.zoomPxPerHour = Number(e.target.value) || 240;
+      if (zoom) {
+        zoom.value = String(state.zoomPxPerHour);
+      }
+      renderTimeline();
+    });
+  }
 
   window.addEventListener('resize', () => renderTimeline());
 
