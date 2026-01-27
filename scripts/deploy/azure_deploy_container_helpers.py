@@ -10,10 +10,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+# Add scripts dir to path to allow importing azure_utils and env_schema
+sys.path.append(str(Path(__file__).parent))
+
 from env_schema import DEPLOY_SCHEMA, EnvTarget
 
-# Add scripts dir to path to allow importing azure_utils
-sys.path.append(str(Path(__file__).parent))
 try:
     from azure_utils import (
         get_service_principal_object_id,

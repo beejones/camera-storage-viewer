@@ -19,11 +19,18 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import sys
+from pathlib import Path
+
+# scripts/deploy/generate_bcrypt_hash.py -> repo root is 2 parents up.
+repo_root = Path(__file__).resolve().parents[2]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 
 from scripts.deploy.azure_deploy_container_helpers import bcrypt_hash_password
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate bcrypt hash for Caddy basicauth")
     parser.add_argument("--cost", type=int, default=14, help="bcrypt cost factor (4-31). Default: 14")
     parser.add_argument(
@@ -31,7 +38,7 @@ def main() -> int:
         action="store_true",
         help="Replace '$' with '$$' for safe inclusion in docker-compose YAML",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     password = getpass.getpass("Basic Auth password: ").strip()
     if not password:
