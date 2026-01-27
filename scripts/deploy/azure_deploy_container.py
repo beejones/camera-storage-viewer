@@ -867,8 +867,9 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
 
         basic_auth_hash: str | None = None
         if basic_auth_hash_or_password:
-            if looks_like_bcrypt_hash(basic_auth_hash_or_password):
-                basic_auth_hash = basic_auth_hash_or_password
+            normalized = deploy_helpers.normalize_bcrypt_hash(basic_auth_hash_or_password)
+            if deploy_helpers.looks_like_bcrypt_hash(normalized):
+                basic_auth_hash = normalized
             else:
                 # Treat as plaintext password and compute bcrypt hash.
                 try:

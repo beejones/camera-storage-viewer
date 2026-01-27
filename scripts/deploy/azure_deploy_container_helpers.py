@@ -636,9 +636,24 @@ def truthy(value: str | None) -> bool:
 
 
 def looks_like_bcrypt_hash(value: str) -> bool:
-    v = (value or "").strip()
+    v = normalize_bcrypt_hash(value)
     # Caddy basicauth bcrypt hashes typically start with $2a$, $2b$, $2y$.
     return v.startswith("$2")
+
+
+def normalize_bcrypt_hash(value: str | None) -> str:
+    """Normalize bcrypt hashes that may be escaped for docker-compose.
+
+    In docker-compose files, `$` is used for interpolation, so bcrypt hashes are
+    often written with `$$` to preserve literal `$` characters.
+
+    Example:
+      $$2a$$14$$...  ->  $2a$14$...
+    """
+    v = (value or "").strip()
+    if v.startswith("$$2"):
+        v = v.replace("$$", "$")
+    return v
 
 
 def bcrypt_hash_password(password: str, *, cost: int = 14) -> str:
