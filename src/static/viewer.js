@@ -141,6 +141,27 @@ function renderTimeline() {
 
   const clips = [...(state.clips || [])].sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
 
+  const ensurePreloadPlayer = () => {
+    let el = $('preloadPlayer');
+    if (el) return el;
+    el = document.createElement('video');
+    el.id = 'preloadPlayer';
+    el.preload = 'auto';
+    el.muted = true;
+    el.style.display = 'none';
+    document.body.appendChild(el);
+    return el;
+  };
+
+  const preloadNextClip = (currentClip) => {
+    const idx = clips.findIndex((c) => c.clip_id === currentClip.clip_id);
+    if (idx < 0 || idx + 1 >= clips.length) return;
+    const next = clips[idx + 1];
+    const preloader = ensurePreloadPlayer();
+    preloader.src = `/media/${next.clip_id}`;
+    preloader.load();
+  };
+
   const playClip = (clip) => {
     const player = $('player');
     state.activeClipId = clip.clip_id;
@@ -149,6 +170,14 @@ function renderTimeline() {
     player.play().catch(() => {});
     setEmptyStateVisible(false);
     renderTimeline();
+
+    preloadNextClip(clip);
+
+    player.onended = () => {
+      const idx = clips.findIndex((c) => c.clip_id === clip.clip_id);
+      if (idx < 0 || idx + 1 >= clips.length) return;
+      playClip(clips[idx + 1]);
+    };
   };
 
   const downloadClip = (clip) => {
