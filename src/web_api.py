@@ -205,18 +205,25 @@ def list_cameras() -> list[CameraOut]:
     # Do it once per request, and keep the per-camera reads DB-only.
     update_index_from_storage(out_dir=out_dir, db_path=db_path)
 
+    db_cameras = set(db_list_cameras(out_dir=out_dir, db_path=db_path, refresh_index=False))
+    fs_cameras = set(camera_dirs)
+    all_cameras = sorted(db_cameras.union(fs_cameras))
+
     cameras: list[CameraOut] = []
-    for camera_id in db_list_cameras(out_dir=out_dir, db_path=db_path, refresh_index=False):
+    for camera_id in all_cameras:
+        last_upload = None
+        if camera_id in db_cameras:
+            last_upload = db_last_upload_time_for_camera(
+                out_dir=out_dir,
+                db_path=db_path,
+                camera_id=camera_id,
+                refresh_index=False,
+            )
         cameras.append(
             CameraOut(
                 camera_id=camera_id,
                 display_name=camera_id,
-                last_upload_at=db_last_upload_time_for_camera(
-                    out_dir=out_dir,
-                    db_path=db_path,
-                    camera_id=camera_id,
-                    refresh_index=False,
-                ),
+                last_upload_at=last_upload,
             )
         )
 
