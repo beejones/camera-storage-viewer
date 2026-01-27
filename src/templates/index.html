@@ -4,7 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Camera Storage Viewer</title>
-    <link rel="stylesheet" href="/static/viewer.css" />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/static/viewer.css?v=2" />
   </head>
   <body>
     <div class="layout">
@@ -41,9 +42,34 @@
         <section class="timeline">
           <div class="timeline__header">
             <div class="timeline__title">Timeline</div>
-            <div class="timeline__hint">Click a clip to play. Hover for thumbnail.</div>
+            <div class="timeline__right">
+              <label class="timelineScaleSelect" for="timelineScaleSelect">
+                <span class="timelineScaleSelect__label">Scale</span>
+                <select id="timelineScaleSelect" class="timelineScaleSelect__input">
+                  <option value="80">Wide</option>
+                  <option value="160">1x</option>
+                  <option value="240" selected>2x</option>
+                  <option value="360">3x</option>
+                  <option value="600">5x</option>
+                  <option value="900">7.5x</option>
+                  <option value="1200">10x</option>
+                </select>
+              </label>
+              <label class="timelineZoom" for="timelineZoom">
+                <span class="timelineZoom__label">Zoom</span>
+                <input id="timelineZoom" class="timelineZoom__input" type="range" min="80" max="1200" step="40" value="240" />
+              </label>
+              <div class="timeline__hint">Click a segment or thumbnail to play. Drag the playhead to scrub.</div>
+            </div>
           </div>
-          <div id="timelineBar" class="timelineBar" aria-label="Timeline"></div>
+
+          <div id="timelineScroll" class="timelineScroll" aria-label="Timeline">
+            <div id="timelineInner" class="timelineInner">
+              <div id="timelineScale" class="timelineScale" aria-hidden="true"></div>
+              <div id="timelineTrack" class="timelineTrack"></div>
+              <div id="timelineFilmstrip" class="timelineFilmstrip" aria-label="Clips"></div>
+            </div>
+          </div>
         </section>
       </main>
     </div>
@@ -53,6 +79,6 @@
       <img id="tooltipImg" class="tooltip__img" alt="thumbnail" />
     </div>
 
-    <script src="/static/viewer.js"></script>
+    <script src="/static/viewer.js?v=2"></script>
   </body>
 </html>

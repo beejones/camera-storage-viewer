@@ -68,6 +68,9 @@ def ingest_incoming_once(
                 continue
 
             st = src_path.stat()
+            if st.st_size <= 0:
+                skipped_recent += 1
+                continue
             age = now - st.st_mtime
             if age < float(min_age_seconds):
                 skipped_recent += 1

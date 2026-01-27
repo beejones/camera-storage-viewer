@@ -12,13 +12,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from src.thumbnails import ensure_thumbnail, generated_thumbnail_path, load_thumbnail_config
+from src.thumbnails import can_generate_thumbnails, ensure_thumbnail, generated_thumbnail_path, load_thumbnail_config
 from src.viewer_db import (
     default_db_path,
     last_upload_time_for_camera as db_last_upload_time_for_camera,
     list_cameras as db_list_cameras,
     list_clips_for_day as db_list_clips_for_day,
     resolve_clip_by_id as db_resolve_clip_by_id,
+    update_index_from_storage,
 )
 from src.web_models import CameraOut, ClipDetailOut, ClipOut
 
@@ -200,13 +201,29 @@ def list_cameras() -> list[CameraOut]:
         _safe_ftp_env_for_logs(env),
     )
 
+    # Index refresh can be expensive on network filesystems.
+    # Do it once per request, and keep the per-camera reads DB-only.
+    update_index_from_storage(out_dir=out_dir, db_path=db_path)
+
+    db_cameras = set(db_list_cameras(out_dir=out_dir, db_path=db_path, refresh_index=False))
+    fs_cameras = set(camera_dirs)
+    all_cameras = sorted(db_cameras.union(fs_cameras))
+
     cameras: list[CameraOut] = []
-    for camera_id in db_list_cameras(out_dir=out_dir, db_path=db_path):
+    for camera_id in all_cameras:
+        last_upload = None
+        if camera_id in db_cameras:
+            last_upload = db_last_upload_time_for_camera(
+                out_dir=out_dir,
+                db_path=db_path,
+                camera_id=camera_id,
+                refresh_index=False,
+            )
         cameras.append(
             CameraOut(
                 camera_id=camera_id,
                 display_name=camera_id,
-                last_upload_at=db_last_upload_time_for_camera(out_dir=out_dir, db_path=db_path, camera_id=camera_id),
+                last_upload_at=last_upload,
             )
         )
 
@@ -225,9 +242,18 @@ def list_clips(
 ) -> list[ClipOut]:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
-    clips = db_list_clips_for_day(out_dir=out_dir, db_path=db_path, camera_id=camera_id, day=day)
+    update_index_from_storage(out_dir=out_dir, db_path=db_path)
+    clips = db_list_clips_for_day(out_dir=out_dir, db_path=db_path, camera_id=camera_id, day=day, refresh_index=False)
 
     thumb_cfg = load_thumbnail_config()
+    can_generate = can_generate_thumbnails()
+
+    def _exists_nonempty(path: Path) -> bool:
+        try:
+            return path.exists() and path.is_file() and path.stat().st_size > 0
+        except FileNotFoundError:
+            return False
+
     return [
         ClipOut(
             clip_id=c.clip_id,
@@ -237,8 +263,9 @@ def list_clips(
             size_bytes=c.size_bytes,
             has_thumbnail=(
                 (c.find_thumbnail() is not None)
-                or generated_thumbnail_path(out_dir, c, size="small", cfg=thumb_cfg).exists()
-                or generated_thumbnail_path(out_dir, c, size="large", cfg=thumb_cfg).exists()
+                or _exists_nonempty(generated_thumbnail_path(out_dir, c, size="small", cfg=thumb_cfg))
+                or _exists_nonempty(generated_thumbnail_path(out_dir, c, size="large", cfg=thumb_cfg))
+                or can_generate
             ),
         )
         for c in clips
@@ -249,7 +276,8 @@ def list_clips(
 def get_clip(clip_id: str) -> ClipDetailOut:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
-    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
+    update_index_from_storage(out_dir=out_dir, db_path=db_path)
+    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id, refresh_index=False)
     if clip is None:
         raise HTTPException(status_code=404, detail="clip not found")
 
@@ -271,12 +299,25 @@ def get_thumbnail(
 ) -> FileResponse:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
-    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
+    update_index_from_storage(out_dir=out_dir, db_path=db_path)
+    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id, refresh_index=False)
     if clip is None:
         raise HTTPException(status_code=404, detail="clip not found")
 
+    try:
+        if not clip.abs_path.exists() or clip.abs_path.stat().st_size <= 0:
+            raise HTTPException(status_code=404, detail="media file missing")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="media file missing")
+
     thumb = ensure_thumbnail(out_dir, clip, size=size)
     if thumb is None:
+        raise HTTPException(status_code=404, detail="thumbnail not found")
+
+    try:
+        if not thumb.exists() or not thumb.is_file() or thumb.stat().st_size <= 0:
+            raise HTTPException(status_code=404, detail="thumbnail not found")
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail="thumbnail not found")
 
     media_type = "image/jpeg"
@@ -292,11 +333,21 @@ def get_thumbnail(
 def stream_media(clip_id: str) -> FileResponse:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
-    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
+    update_index_from_storage(out_dir=out_dir, db_path=db_path)
+    clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id, refresh_index=False)
     if clip is None:
         raise HTTPException(status_code=404, detail="clip not found")
 
-    return FileResponse(path=str(clip.abs_path), media_type="video/mp4")
+    try:
+        if not clip.abs_path.exists() or clip.abs_path.stat().st_size <= 0:
+            raise HTTPException(status_code=404, detail="media file missing")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="media file missing")
+
+    try:
+        return FileResponse(path=str(clip.abs_path), media_type="video/mp4")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="media file missing")
 
 
 if __name__ == "__main__":
