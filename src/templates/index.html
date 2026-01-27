@@ -11,10 +11,6 @@
       <aside class="sidebar">
         <div class="sidebar__header">
           <div class="brand">Camera Storage Viewer</div>
-          <div class="token">
-            <label class="token__label" for="tokenInput">Token</label>
-            <input id="tokenInput" class="token__input" type="password" placeholder="optional" />
-          </div>
           <div class="date">
             <label class="date__label" for="dateInput">Date (UTC)</label>
             <input id="dateInput" class="date__input" type="date" />
@@ -22,6 +18,7 @@
         </div>
 
         <div class="sidebar__sectionTitle">Cameras</div>
+        <div id="cameraListStatus" class="cameraListStatus" role="status" aria-live="polite"></div>
         <div id="cameraList" class="cameraList" aria-label="Cameras"></div>
       </aside>
 

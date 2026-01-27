@@ -49,14 +49,14 @@ html, body {
   letter-spacing: 0.12em;
 }
 
-.token, .date { margin-top: 10px; }
-.token__label, .date__label {
+.date { margin-top: 10px; }
+.date__label {
   display: block;
   font-size: 12px;
   color: var(--muted);
   margin-bottom: 6px;
 }
-.token__input, .date__input {
+.date__input {
   width: 100%;
   padding: 10px 12px;
   border-radius: 10px;
@@ -64,6 +64,17 @@ html, body {
   background: rgba(255,255,255,0.04);
   color: var(--text);
   outline: none;
+}
+
+.cameraListStatus {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 10px;
+  min-height: 16px;
+}
+
+.cameraListStatus--error {
+  color: rgba(255, 170, 170, 0.95);
 }
 
 .cameraList {

@@ -108,6 +108,46 @@ def get_command(service_config: Dict[str, Any]) -> Optional[Union[str, list]]:
     return service_config.get("command")
 
 
+def get_volumes(service_config: Dict[str, Any]) -> list[Any]:
+    """Get the raw 'volumes' list for a service (Compose short or long syntax)."""
+    vols = service_config.get("volumes", [])
+    if vols is None:
+        return []
+    if not isinstance(vols, list):
+        # Unexpected shape; keep it safe.
+        return []
+    return vols
+
+
+def get_volume_targets(service_config: Dict[str, Any]) -> list[str]:
+    """Return container target paths for service volume mounts.
+
+    Supports Compose short syntax ("source:target[:mode]") and long syntax ({target: ...}).
+    """
+
+    targets: list[str] = []
+    for v in get_volumes(service_config):
+        if isinstance(v, str):
+            # Short syntax: src:dst[:mode]
+            parts = v.split(":")
+            if len(parts) >= 2:
+                target = str(parts[1]).strip()
+                if target:
+                    targets.append(target)
+            continue
+
+        if isinstance(v, dict):
+            # Long syntax: {type: bind|volume, source: ..., target: ...}
+            target = v.get("target") or v.get("destination")
+            if target is not None:
+                t = str(target).strip()
+                if t:
+                    targets.append(t)
+            continue
+
+    return targets
+
+
 def normalize_command(command: Any) -> list[str]:
     """
     Normalizes a Compose command (string or list) into an ACI-compatible list of strings.

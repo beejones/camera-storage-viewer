@@ -3,25 +3,26 @@ function $(id) { return document.getElementById(id); }
 const state = {
   cameraId: null,
   date: null,
-  token: null,
   clips: [],
 };
 
-function authHeaders() {
-  const headers = {};
-  if (state.token) {
-    headers['Authorization'] = `Bearer ${state.token}`;
-  }
-  return headers;
-}
-
 async function apiGetJson(url) {
-  const resp = await fetch(url, { headers: authHeaders() });
+  const resp = await fetch(url);
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${text}`);
+    const err = new Error(`${resp.status} ${resp.statusText}: ${text}`);
+    err.status = resp.status;
+    err.bodyText = text;
+    throw err;
   }
   return resp.json();
+}
+
+function setCameraStatus(message, kind) {
+  const statusEl = $('cameraListStatus');
+  if (!statusEl) return;
+  statusEl.textContent = message || '';
+  statusEl.classList.toggle('cameraListStatus--error', kind === 'error');
 }
 
 function fmtTs(iso) {
@@ -118,8 +119,22 @@ function hideTooltip() {
 async function loadCameras() {
   const list = $('cameraList');
   list.innerHTML = '';
+  setCameraStatus('Loading cameras…', 'info');
 
-  const cameras = await apiGetJson('/api/cameras');
+  let cameras;
+  try {
+    cameras = await apiGetJson('/api/cameras');
+  } catch (e) {
+    setCameraStatus(`Failed to load cameras: ${e && e.message ? e.message : String(e)}`, 'error');
+    throw e;
+  }
+
+  if (!Array.isArray(cameras) || cameras.length === 0) {
+    setCameraStatus('No cameras found yet.', 'info');
+    return;
+  }
+
+  setCameraStatus('', 'info');
 
   for (const cam of cameras) {
     const item = document.createElement('div');
@@ -183,17 +198,6 @@ function init() {
 
   state.date = todayUtc;
   $('dateInput').value = todayUtc;
-
-  const savedToken = localStorage.getItem('viewer_token') || '';
-  state.token = savedToken;
-  $('tokenInput').value = savedToken;
-
-  $('tokenInput').addEventListener('input', (e) => {
-    state.token = e.target.value;
-    localStorage.setItem('viewer_token', state.token);
-    // refresh when token changes
-    loadCameras().then(loadClips).catch(console.error);
-  });
 
   $('dateInput').addEventListener('change', (e) => {
     state.date = e.target.value;

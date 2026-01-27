@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from datetime import date
 from pathlib import Path
@@ -20,6 +21,9 @@ from src.viewer_db import (
     resolve_clip_by_id as db_resolve_clip_by_id,
 )
 from src.web_models import CameraOut, ClipDetailOut, ClipOut
+
+
+_LOG = logging.getLogger("src.web_api")
 
 
 def _merged_env() -> dict[str, str]:
@@ -55,20 +59,58 @@ def _out_dir() -> Path:
     env = _merged_env()
     return Path(str(env.get("OUT_DIR", "/data")).strip() or "/data")
 
-
-def _require_token(request: Request) -> None:
-    env = _merged_env()
-    token = str(env.get("VIEWER_AUTH_TOKEN", "")).strip()
-    if not token:
-        return
-    auth = request.headers.get("authorization") or ""
-    if auth.strip() != f"Bearer {token}":
-        raise HTTPException(status_code=401, detail="unauthorized")
-
-
-AuthDep = Annotated[None, Depends(_require_token)]
-
 app = FastAPI(title="Camera Storage Viewer")
+
+
+@app.on_event("startup")
+def _log_startup_state() -> None:
+    env = _merged_env()
+    out_dir = _out_dir()
+
+    incoming_dir = out_dir / "incoming"
+    camera_dirs: list[str] = []
+    try:
+        if incoming_dir.exists() and incoming_dir.is_dir():
+            camera_dirs = sorted([p.name for p in incoming_dir.iterdir() if p.is_dir()])
+    except Exception:
+        camera_dirs = []
+
+    runtime_env_path = str(os.getenv("RUNTIME_ENV_PATH", "/app/.env")).strip() or "/app/.env"
+    runtime_env_exists = Path(runtime_env_path).exists()
+    keyvault_uri_set = bool(str(env.get("AZURE_KEYVAULT_URI", "")).strip())
+
+    def _presence(key: str) -> str:
+        v = env.get(key)
+        return "set" if (v is not None and str(v).strip() != "") else "unset"
+
+    # Never log secrets (APP_SECRET / BASIC_AUTH_HASH / FTP_PASSWORD).
+    safe_presence = {
+        "AZURE_KEYVAULT_URI": "set" if keyvault_uri_set else "unset",
+        "RUNTIME_ENV_PATH": runtime_env_path,
+        "RUNTIME_ENV_EXISTS": "yes" if runtime_env_exists else "no",
+        "OUT_DIR": str(out_dir),
+        "WEB_PORT": _presence("WEB_PORT"),
+        "THUMBNAIL_GENERATION": _presence("THUMBNAIL_GENERATION"),
+        # FTP config (presence only)
+        "FTP_BIND_HOST": _presence("FTP_BIND_HOST"),
+        "FTP_PORT": _presence("FTP_PORT"),
+        "FTP_PASSIVE_PORT_MIN": _presence("FTP_PASSIVE_PORT_MIN"),
+        "FTP_PASSIVE_PORT_MAX": _presence("FTP_PASSIVE_PORT_MAX"),
+        "FTP_PUBLIC_HOST": _presence("FTP_PUBLIC_HOST"),
+        "FTP_DEV_DEFAULTS": _presence("FTP_DEV_DEFAULTS"),
+        "FTP_CAMERA_ID": _presence("FTP_CAMERA_ID"),
+        "FTP_USERNAME": _presence("FTP_USERNAME"),
+        "FTP_USERS_JSON": _presence("FTP_USERS_JSON"),
+    }
+
+    _LOG.info(
+        "startup: out_dir=%s exists=%s incoming=%s camera_dirs=%s env=%s",
+        str(out_dir),
+        "yes" if out_dir.exists() else "no",
+        str(incoming_dir),
+        f"{len(camera_dirs)} ({', '.join(camera_dirs[:5])}{'...' if len(camera_dirs) > 5 else ''})",
+        safe_presence,
+    )
 
 _BASE_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
@@ -86,7 +128,7 @@ def healthz() -> dict[str, str]:
 
 
 @app.get("/api/cameras", response_model=list[CameraOut])
-def list_cameras(_: AuthDep) -> list[CameraOut]:
+def list_cameras() -> list[CameraOut]:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
     cameras: list[CameraOut] = []
@@ -104,7 +146,6 @@ def list_cameras(_: AuthDep) -> list[CameraOut]:
 @app.get("/api/cameras/{camera_id}/clips", response_model=list[ClipOut])
 def list_clips(
     camera_id: str,
-    _: AuthDep,
     day: Annotated[date, Query(alias="date")],
 ) -> list[ClipOut]:
     out_dir = _out_dir()
@@ -130,7 +171,7 @@ def list_clips(
 
 
 @app.get("/api/clips/{clip_id}", response_model=ClipDetailOut)
-def get_clip(clip_id: str, _: AuthDep) -> ClipDetailOut:
+def get_clip(clip_id: str) -> ClipDetailOut:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
     clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)
@@ -151,7 +192,6 @@ def get_clip(clip_id: str, _: AuthDep) -> ClipDetailOut:
 @app.get("/api/clips/{clip_id}/thumbnail")
 def get_thumbnail(
     clip_id: str,
-    _: AuthDep,
     size: Annotated[str, Query(pattern="^(small|large)$")] = "small",
 ) -> FileResponse:
     out_dir = _out_dir()
@@ -174,7 +214,7 @@ def get_thumbnail(
 
 
 @app.get("/media/{clip_id}")
-def stream_media(clip_id: str, _: AuthDep) -> FileResponse:
+def stream_media(clip_id: str) -> FileResponse:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
     clip = db_resolve_clip_by_id(out_dir=out_dir, db_path=db_path, clip_id=clip_id)

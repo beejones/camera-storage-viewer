@@ -100,7 +100,6 @@ class SecretsEnum(str, Enum):
 
     # Runtime
     BASIC_AUTH_HASH = "BASIC_AUTH_HASH"
-    VIEWER_AUTH_TOKEN = "VIEWER_AUTH_TOKEN"
 
     # Runtime (camera FTP)
     FTP_PASSWORD = "FTP_PASSWORD"
@@ -165,12 +164,6 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
         key=VarsEnum.WEB_PORT,
         mandatory=False,
         default="8081",
-        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
-    ),
-    EnvKeySpec(
-        key=SecretsEnum.VIEWER_AUTH_TOKEN,
-        mandatory=False,
-        default=None,
         targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
     ),
     EnvKeySpec(
