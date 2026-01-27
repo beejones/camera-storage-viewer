@@ -23,7 +23,8 @@ from src.viewer_db import (
 from src.web_models import CameraOut, ClipDetailOut, ClipOut
 
 
-_LOG = logging.getLogger("src.web_api")
+# Use Uvicorn's logger so messages reliably show up in container logs.
+_LOG = logging.getLogger("uvicorn.error")
 
 
 def _merged_env() -> dict[str, str]:
@@ -59,6 +60,41 @@ def _out_dir() -> Path:
     env = _merged_env()
     return Path(str(env.get("OUT_DIR", "/data")).strip() or "/data")
 
+
+def _list_camera_dirs(out_dir: Path) -> list[str]:
+    incoming_dir = out_dir / "incoming"
+    if not incoming_dir.exists() or not incoming_dir.is_dir():
+        return []
+    return sorted([p.name for p in incoming_dir.iterdir() if p.is_dir()])
+
+
+def _safe_ftp_env_for_logs(env: dict[str, str]) -> dict[str, str]:
+    def _get(key: str) -> str:
+        v = env.get(key)
+        return "" if v is None else str(v)
+
+    def _presence(key: str) -> str:
+        v = _get(key).strip()
+        return "set" if v else "unset"
+
+    users_json = _get("FTP_USERS_JSON")
+
+    # IMPORTANT: FTP_USERS_JSON contains passwords, so never log its value.
+    return {
+        "FTP_BIND_HOST": _get("FTP_BIND_HOST"),
+        "FTP_PORT": _get("FTP_PORT"),
+        "FTP_PUBLIC_HOST": _get("FTP_PUBLIC_HOST"),
+        "FTP_PASSIVE_PORT_MIN": _get("FTP_PASSIVE_PORT_MIN"),
+        "FTP_PASSIVE_PORT_MAX": _get("FTP_PASSIVE_PORT_MAX"),
+        "FTP_PERMIT_FOREIGN_ADDRESSES": _get("FTP_PERMIT_FOREIGN_ADDRESSES"),
+        "FTP_INCOMING_DIR": _get("FTP_INCOMING_DIR"),
+        "FTP_SPOOL_DIR": _get("FTP_SPOOL_DIR"),
+        "FTP_CAMERA_ID": _get("FTP_CAMERA_ID"),
+        "FTP_USERNAME": _get("FTP_USERNAME"),
+        "FTP_PASSWORD": _presence("FTP_PASSWORD"),
+        "FTP_USERS_JSON": f"{_presence('FTP_USERS_JSON')} (len={len(users_json)})" if users_json else "unset",
+    }
+
 app = FastAPI(title="Camera Storage Viewer")
 
 
@@ -68,10 +104,8 @@ def _log_startup_state() -> None:
     out_dir = _out_dir()
 
     incoming_dir = out_dir / "incoming"
-    camera_dirs: list[str] = []
     try:
-        if incoming_dir.exists() and incoming_dir.is_dir():
-            camera_dirs = sorted([p.name for p in incoming_dir.iterdir() if p.is_dir()])
+        camera_dirs = _list_camera_dirs(out_dir)
     except Exception:
         camera_dirs = []
 
@@ -79,28 +113,15 @@ def _log_startup_state() -> None:
     runtime_env_exists = Path(runtime_env_path).exists()
     keyvault_uri_set = bool(str(env.get("AZURE_KEYVAULT_URI", "")).strip())
 
-    def _presence(key: str) -> str:
-        v = env.get(key)
-        return "set" if (v is not None and str(v).strip() != "") else "unset"
-
-    # Never log secrets (APP_SECRET / BASIC_AUTH_HASH / FTP_PASSWORD).
-    safe_presence = {
+    # Never log secrets (APP_SECRET / BASIC_AUTH_HASH). FTP_PASSWORD is logged as presence only.
+    safe_env = {
         "AZURE_KEYVAULT_URI": "set" if keyvault_uri_set else "unset",
         "RUNTIME_ENV_PATH": runtime_env_path,
         "RUNTIME_ENV_EXISTS": "yes" if runtime_env_exists else "no",
         "OUT_DIR": str(out_dir),
-        "WEB_PORT": _presence("WEB_PORT"),
-        "THUMBNAIL_GENERATION": _presence("THUMBNAIL_GENERATION"),
-        # FTP config (presence only)
-        "FTP_BIND_HOST": _presence("FTP_BIND_HOST"),
-        "FTP_PORT": _presence("FTP_PORT"),
-        "FTP_PASSIVE_PORT_MIN": _presence("FTP_PASSIVE_PORT_MIN"),
-        "FTP_PASSIVE_PORT_MAX": _presence("FTP_PASSIVE_PORT_MAX"),
-        "FTP_PUBLIC_HOST": _presence("FTP_PUBLIC_HOST"),
-        "FTP_DEV_DEFAULTS": _presence("FTP_DEV_DEFAULTS"),
-        "FTP_CAMERA_ID": _presence("FTP_CAMERA_ID"),
-        "FTP_USERNAME": _presence("FTP_USERNAME"),
-        "FTP_USERS_JSON": _presence("FTP_USERS_JSON"),
+        "WEB_PORT": "set" if str(env.get("WEB_PORT", "")).strip() else "unset",
+        "THUMBNAIL_GENERATION": "set" if str(env.get("THUMBNAIL_GENERATION", "")).strip() else "unset",
+        **_safe_ftp_env_for_logs(env),
     }
 
     _LOG.info(
@@ -109,7 +130,7 @@ def _log_startup_state() -> None:
         "yes" if out_dir.exists() else "no",
         str(incoming_dir),
         f"{len(camera_dirs)} ({', '.join(camera_dirs[:5])}{'...' if len(camera_dirs) > 5 else ''})",
-        safe_presence,
+        safe_env,
     )
 
 _BASE_DIR = Path(__file__).resolve().parent
@@ -129,8 +150,27 @@ def healthz() -> dict[str, str]:
 
 @app.get("/api/cameras", response_model=list[CameraOut])
 def list_cameras() -> list[CameraOut]:
+    env = _merged_env()
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
+
+    # Log every refresh so it's visible in container logs.
+    try:
+        camera_dirs = _list_camera_dirs(out_dir)
+    except Exception:
+        camera_dirs = []
+    _LOG.info(
+        "GET /api/cameras: out_dir=%s out_dir_exists=%s db=%s db_exists=%s incoming=%s incoming_exists=%s incoming_camera_dirs=%s ftp=%s",
+        str(out_dir),
+        "yes" if out_dir.exists() else "no",
+        str(db_path),
+        "yes" if db_path.exists() else "no",
+        str(out_dir / "incoming"),
+        "yes" if (out_dir / "incoming").exists() else "no",
+        f"{len(camera_dirs)} ({', '.join(camera_dirs[:10])}{'...' if len(camera_dirs) > 10 else ''})",
+        _safe_ftp_env_for_logs(env),
+    )
+
     cameras: list[CameraOut] = []
     for camera_id in db_list_cameras(out_dir=out_dir, db_path=db_path):
         cameras.append(
@@ -140,6 +180,12 @@ def list_cameras() -> list[CameraOut]:
                 last_upload_at=db_last_upload_time_for_camera(out_dir=out_dir, db_path=db_path, camera_id=camera_id),
             )
         )
+
+    _LOG.info(
+        "GET /api/cameras: returning %s cameras (%s)",
+        len(cameras),
+        ", ".join([c.camera_id for c in cameras[:10]]) + ("..." if len(cameras) > 10 else ""),
+    )
     return cameras
 
 
