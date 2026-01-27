@@ -32,6 +32,7 @@ def generate_deploy_yaml(
     ftp_port: int = 21,
     ftp_passive_port_min: int = 50000,
     ftp_passive_port_max: int = 50003,
+    command: list[str] | None = None,
 ) -> str:
     app_memory_gb = normalize_aci_memory_gb(memory_gb)
 
@@ -86,6 +87,23 @@ def generate_deploy_yaml(
         indent(4, f"- name: {name}"),
         indent(6, "properties:"),
         indent(8, f"image: {image}"),
+    ]
+
+    # ACI `command` overrides Docker ENTRYPOINT; include azure_start.sh explicitly
+    # so the runtime env is fetched from Key Vault.
+    effective_command = command or [
+        "/usr/local/bin/azure_start.sh",
+        "python",
+        "-m",
+        "src.ftp_server",
+    ]
+    if effective_command:
+        lines.append(indent(8, "command:"))
+        for part in effective_command:
+            # Quote to keep YAML parsing stable.
+            lines.append(indent(10, f"- '{part}'"))
+
+    lines += [
         indent(8, "ports:"),
         indent(10, f"- port: {ftp_port}"),
         indent(12, "protocol: TCP"),

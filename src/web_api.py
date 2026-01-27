@@ -69,30 +69,41 @@ def _list_camera_dirs(out_dir: Path) -> list[str]:
 
 
 def _safe_ftp_env_for_logs(env: dict[str, str]) -> dict[str, str]:
-    def _get(key: str) -> str:
+    def _raw(key: str) -> str | None:
         v = env.get(key)
-        return "" if v is None else str(v)
+        if v is None:
+            return None
+        s = str(v)
+        return s if s.strip() else None
+
+    def _value_or_unset(key: str) -> str:
+        v = _raw(key)
+        return v if v is not None else "(unset)"
 
     def _presence(key: str) -> str:
-        v = _get(key).strip()
-        return "set" if v else "unset"
+        return "set" if _raw(key) is not None else "unset"
 
-    users_json = _get("FTP_USERS_JSON")
+    users_json_raw = env.get("FTP_USERS_JSON")
+    users_json_len = 0 if users_json_raw is None else len(str(users_json_raw))
 
-    # IMPORTANT: FTP_USERS_JSON contains passwords, so never log its value.
+    # IMPORTANT:
+    # - FTP_PASSWORD is secret: log presence only.
+    # - FTP_USERS_JSON contains passwords: never log the value.
     return {
-        "FTP_BIND_HOST": _get("FTP_BIND_HOST"),
-        "FTP_PORT": _get("FTP_PORT"),
-        "FTP_PUBLIC_HOST": _get("FTP_PUBLIC_HOST"),
-        "FTP_PASSIVE_PORT_MIN": _get("FTP_PASSIVE_PORT_MIN"),
-        "FTP_PASSIVE_PORT_MAX": _get("FTP_PASSIVE_PORT_MAX"),
-        "FTP_PERMIT_FOREIGN_ADDRESSES": _get("FTP_PERMIT_FOREIGN_ADDRESSES"),
-        "FTP_INCOMING_DIR": _get("FTP_INCOMING_DIR"),
-        "FTP_SPOOL_DIR": _get("FTP_SPOOL_DIR"),
-        "FTP_CAMERA_ID": _get("FTP_CAMERA_ID"),
-        "FTP_USERNAME": _get("FTP_USERNAME"),
+        "FTP_BIND_HOST": _value_or_unset("FTP_BIND_HOST"),
+        "FTP_PORT": _value_or_unset("FTP_PORT"),
+        "FTP_PUBLIC_HOST": _value_or_unset("FTP_PUBLIC_HOST"),
+        "FTP_PASSIVE_PORT_MIN": _value_or_unset("FTP_PASSIVE_PORT_MIN"),
+        "FTP_PASSIVE_PORT_MAX": _value_or_unset("FTP_PASSIVE_PORT_MAX"),
+        "FTP_PERMIT_FOREIGN_ADDRESSES": _value_or_unset("FTP_PERMIT_FOREIGN_ADDRESSES"),
+        "FTP_INCOMING_DIR": _value_or_unset("FTP_INCOMING_DIR"),
+        "FTP_SPOOL_DIR": _value_or_unset("FTP_SPOOL_DIR"),
+        "FTP_CAMERA_ID": _value_or_unset("FTP_CAMERA_ID"),
+        "FTP_USERNAME": _value_or_unset("FTP_USERNAME"),
         "FTP_PASSWORD": _presence("FTP_PASSWORD"),
-        "FTP_USERS_JSON": f"{_presence('FTP_USERS_JSON')} (len={len(users_json)})" if users_json else "unset",
+        "FTP_USERS_JSON": (
+            f"set (len={users_json_len})" if _presence("FTP_USERS_JSON") == "set" else "unset"
+        ),
     }
 
 app = FastAPI(title="Camera Storage Viewer")
@@ -113,6 +124,20 @@ def _log_startup_state() -> None:
     runtime_env_exists = Path(runtime_env_path).exists()
     keyvault_uri_set = bool(str(env.get("AZURE_KEYVAULT_URI", "")).strip())
 
+    # Summarize what's actually on disk under OUT_DIR.
+    db_path = default_db_path(out_dir)
+    try:
+        data_children = []
+        if out_dir.exists() and out_dir.is_dir():
+            data_children = sorted([p.name for p in out_dir.iterdir()])
+    except Exception:
+        data_children = []
+
+    try:
+        db_size = db_path.stat().st_size if db_path.exists() else None
+    except Exception:
+        db_size = None
+
     # Never log secrets (APP_SECRET / BASIC_AUTH_HASH). FTP_PASSWORD is logged as presence only.
     safe_env = {
         "AZURE_KEYVAULT_URI": "set" if keyvault_uri_set else "unset",
@@ -125,9 +150,13 @@ def _log_startup_state() -> None:
     }
 
     _LOG.info(
-        "startup: out_dir=%s exists=%s incoming=%s camera_dirs=%s env=%s",
+        "startup: out_dir=%s exists=%s children=%s db=%s db_exists=%s db_size=%s incoming=%s camera_dirs=%s env=%s",
         str(out_dir),
         "yes" if out_dir.exists() else "no",
+        f"{len(data_children)} ({', '.join(data_children[:10])}{'...' if len(data_children) > 10 else ''})",
+        str(db_path),
+        "yes" if db_path.exists() else "no",
+        "?" if db_size is None else str(db_size),
         str(incoming_dir),
         f"{len(camera_dirs)} ({', '.join(camera_dirs[:5])}{'...' if len(camera_dirs) > 5 else ''})",
         safe_env,
