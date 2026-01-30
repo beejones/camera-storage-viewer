@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import contextlib
+import logging
+import os
 import sqlite3
 import subprocess
+import time
 from shutil import which
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+try:
+    import fcntl  # type: ignore
+except Exception:  # pragma: no cover
+    fcntl = None  # type: ignore
+
 from src.viewer_index import VIDEO_EXTS, _clip_id_for, _utc_from_timestamp
+
+
+_LOG = logging.getLogger("uvicorn.error")
 
 
 @dataclass(frozen=True)
@@ -40,13 +52,202 @@ def default_db_path(out_dir: Path) -> Path:
     return out_dir / "databases" / "index.sqlite"
 
 
+def _require_int_env(name: str, raw: str | None, *, default: int, min_value: int, max_value: int) -> int:
+    s = str(raw or "").strip()
+    if not s:
+        return default
+    try:
+        value = int(s)
+    except ValueError as e:
+        raise ValueError(f"{name} must be an integer") from e
+    if value < min_value or value > max_value:
+        raise ValueError(f"{name} must be between {min_value} and {max_value}")
+    return value
+
+
+def _sqlite_journal_mode() -> str:
+    # Default to DELETE for Azure Files safety (WAL is risky on SMB/NFS).
+    mode = str(os.getenv("SQLITE_JOURNAL_MODE", "DELETE")).strip().upper() or "DELETE"
+    allowed = {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF", "WAL"}
+    if mode not in allowed:
+        raise ValueError(f"SQLITE_JOURNAL_MODE must be one of {sorted(allowed)}")
+    return mode
+
+
+def _sqlite_synchronous() -> str:
+    # Default to FULL for durability on network filesystems.
+    level = str(os.getenv("SQLITE_SYNCHRONOUS", "FULL")).strip().upper() or "FULL"
+    allowed = {"OFF", "NORMAL", "FULL", "EXTRA"}
+    if level not in allowed:
+        raise ValueError(f"SQLITE_SYNCHRONOUS must be one of {sorted(allowed)}")
+    return level
+
+
+def _sqlite_busy_timeout_ms() -> int:
+    return _require_int_env(
+        "SQLITE_BUSY_TIMEOUT_MS",
+        os.getenv("SQLITE_BUSY_TIMEOUT_MS"),
+        default=5000,
+        min_value=0,
+        max_value=600_000,
+    )
+
+
+def _index_refresh_ttl_seconds() -> int:
+    # If 0, refresh every time (legacy behavior). Default to a small TTL.
+    return _require_int_env(
+        "INDEX_REFRESH_TTL_SECONDS",
+        os.getenv("INDEX_REFRESH_TTL_SECONDS"),
+        default=30,
+        min_value=0,
+        max_value=24 * 60 * 60,
+    )
+
+
+def _resolve_index_lock_path(*, out_dir: Path, db_path: Path) -> Path:
+    raw = str(os.getenv("INDEX_LOCK_PATH", "")).strip()
+    if not raw:
+        return db_path.parent / "index.lock"
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return p
+    return out_dir / p
+
+
+def _last_refresh_path(db_path: Path) -> Path:
+    return db_path.parent / "index.last_refresh"
+
+
+@contextlib.contextmanager
+def _exclusive_lock(lock_path: Path, *, timeout_seconds: float = 30.0):
+    """Best-effort process/thread lock via file locking.
+
+    This serializes indexing/writes to SQLite (especially important on Azure Files).
+    """
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if fcntl is None:  # pragma: no cover
+        # No fcntl available (e.g., non-POSIX). Proceed without a lock.
+        yield
+        return
+
+    with open(lock_path, "a+") as f:
+        start = time.monotonic()
+        while True:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() - start >= timeout_seconds:
+                    raise TimeoutError(f"Timed out waiting for index lock: {lock_path}")
+                time.sleep(0.1)
+
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
+    busy_timeout_ms = _sqlite_busy_timeout_ms()
+    connect_timeout_s = max(0.0, busy_timeout_ms / 1000.0)
+
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=connect_timeout_s)
+            conn.row_factory = sqlite3.Row
+
+            # IMPORTANT: avoid WAL by default (Azure Files/SMB). These are env-tunable.
+            conn.execute(f"PRAGMA journal_mode={_sqlite_journal_mode()}")
+            conn.execute(f"PRAGMA synchronous={_sqlite_synchronous()}")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=?", (busy_timeout_ms,))
+            return conn
+        except sqlite3.OperationalError as e:
+            last_err = e
+            msg = str(e).lower()
+            # Common transient on network mounts / during startup.
+            if "unable to open database file" in msg or "disk i/o error" in msg:
+                time.sleep(0.2 * (attempt + 1))
+                continue
+            raise
+
+    assert last_err is not None
+    raise last_err
+
+
+def _is_corruption_error(err: BaseException) -> bool:
+    msg = str(err).lower()
+    return (
+        "database disk image is malformed" in msg
+        or "file is not a database" in msg
+        or "malformed" in msg
+        or "database image is malformed" in msg
+    )
+
+
+def _backup_corrupt_db(db_path: Path) -> None:
+    if not db_path.exists():
+        return
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    backup = db_path.with_name(f"{db_path.name}.corrupt-{ts}")
+    try:
+        db_path.rename(backup)
+    except Exception:
+        # Best-effort: if rename fails (e.g. share glitch), leave it in place.
+        return
+
+    # If a previous WAL mode left sidecar files, stash them too.
+    for suffix in ("-wal", "-shm"):
+        sidecar = db_path.with_name(db_path.name + suffix)
+        if sidecar.exists():
+            try:
+                sidecar.rename(backup.with_name(backup.name + suffix))
+            except Exception:
+                pass
+
+
+def refresh_index_if_stale(*, out_dir: Path, db_path: Path, ttl_seconds: int | None = None) -> None:
+    """Refresh index at most once per TTL.
+
+    Uses a file lock to prevent concurrent writers (threads/processes) from
+    corrupting the DB or fighting over locks on network filesystems.
+    """
+
+    ttl = _index_refresh_ttl_seconds() if ttl_seconds is None else max(0, int(ttl_seconds))
+    lock_path = _resolve_index_lock_path(out_dir=out_dir, db_path=db_path)
+    last_refresh = _last_refresh_path(db_path)
+
+    with _exclusive_lock(lock_path, timeout_seconds=30.0):
+        if ttl > 0 and last_refresh.exists():
+            try:
+                age_s = time.time() - last_refresh.stat().st_mtime
+                if age_s >= 0 and age_s < ttl:
+                    return
+            except FileNotFoundError:
+                pass
+
+        try:
+            _update_index_from_storage_unlocked(out_dir=out_dir, db_path=db_path)
+        except sqlite3.Error as e:
+            if _is_corruption_error(e):
+                _LOG.error("SQLite corruption detected; rebuilding index DB: %s (%s)", str(db_path), str(e))
+                _backup_corrupt_db(db_path)
+                _update_index_from_storage_unlocked(out_dir=out_dir, db_path=db_path)
+            else:
+                raise
+
+        last_refresh.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            last_refresh.write_text(datetime.now(timezone.utc).isoformat() + "\n")
+        except Exception:
+            # If we can't persist last-refresh, we still prefer serving requests.
+            pass
 
 
 def init_db(db_path: Path) -> None:
@@ -120,7 +321,7 @@ def _iter_media_roots(out_dir: Path) -> list[tuple[str, Path]]:
     ]
 
 
-def update_index_from_storage(*, out_dir: Path, db_path: Path) -> None:
+def _update_index_from_storage_unlocked(*, out_dir: Path, db_path: Path) -> None:
     init_db(db_path)
 
     upserts: list[tuple[str, str, str, str, float | None, int, int]] = []
@@ -164,10 +365,36 @@ def update_index_from_storage(*, out_dir: Path, db_path: Path) -> None:
         )
 
 
+def update_index_from_storage(*, out_dir: Path, db_path: Path) -> None:
+    """Force an immediate index refresh.
+
+    This is still serialized via the same index lock to avoid concurrent writers.
+    """
+
+    lock_path = _resolve_index_lock_path(out_dir=out_dir, db_path=db_path)
+    last_refresh = _last_refresh_path(db_path)
+    with _exclusive_lock(lock_path, timeout_seconds=30.0):
+        try:
+            _update_index_from_storage_unlocked(out_dir=out_dir, db_path=db_path)
+        except sqlite3.Error as e:
+            if _is_corruption_error(e):
+                _LOG.error("SQLite corruption detected; rebuilding index DB: %s (%s)", str(db_path), str(e))
+                _backup_corrupt_db(db_path)
+                _update_index_from_storage_unlocked(out_dir=out_dir, db_path=db_path)
+            else:
+                raise
+
+        last_refresh.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            last_refresh.write_text(datetime.now(timezone.utc).isoformat() + "\n")
+        except Exception:
+            pass
+
+
 def list_cameras(*, out_dir: Path, db_path: Path, refresh_index: bool = True) -> list[str]:
     init_db(db_path)
     if refresh_index:
-        update_index_from_storage(out_dir=out_dir, db_path=db_path)
+        refresh_index_if_stale(out_dir=out_dir, db_path=db_path)
 
     with _connect(db_path) as conn:
         rows = conn.execute(
@@ -185,7 +412,7 @@ def last_upload_time_for_camera(
 ) -> datetime | None:
     init_db(db_path)
     if refresh_index:
-        update_index_from_storage(out_dir=out_dir, db_path=db_path)
+        refresh_index_if_stale(out_dir=out_dir, db_path=db_path)
 
     with _connect(db_path) as conn:
         row = conn.execute(
@@ -207,7 +434,7 @@ def list_clips_for_day(
 ) -> list[DbClip]:
     init_db(db_path)
     if refresh_index:
-        update_index_from_storage(out_dir=out_dir, db_path=db_path)
+        refresh_index_if_stale(out_dir=out_dir, db_path=db_path)
 
     day_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
@@ -256,7 +483,7 @@ def resolve_clip_by_id(
 ) -> DbClip | None:
     init_db(db_path)
     if refresh_index:
-        update_index_from_storage(out_dir=out_dir, db_path=db_path)
+        refresh_index_if_stale(out_dir=out_dir, db_path=db_path)
 
     with _connect(db_path) as conn:
         row = conn.execute(
