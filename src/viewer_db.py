@@ -166,7 +166,8 @@ def _connect(db_path: Path) -> sqlite3.Connection:
             conn.execute(f"PRAGMA journal_mode={_sqlite_journal_mode()}")
             conn.execute(f"PRAGMA synchronous={_sqlite_synchronous()}")
             conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout=?", (busy_timeout_ms,))
+            # NOTE: SQLite does not support parameter binding in PRAGMA statements.
+            conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
             return conn
         except sqlite3.OperationalError as e:
             last_err = e
