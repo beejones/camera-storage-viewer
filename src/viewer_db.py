@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 try:
     import fcntl  # type: ignore
 except Exception:  # pragma: no cover
@@ -20,6 +22,34 @@ from src.viewer_index import VIDEO_EXTS, _clip_id_for, _utc_from_timestamp
 
 
 _LOG = logging.getLogger("uvicorn.error")
+
+
+def _merged_env() -> dict[str, str]:
+    """Return merged env from (optional) dotenv file + process env.
+
+    Azure deployments can fetch a runtime .env into RUNTIME_ENV_PATH via azure_start.sh.
+    """
+
+    env_path_candidates = [
+        Path(str(os.getenv("RUNTIME_ENV_PATH", "")).strip()).expanduser() if os.getenv("RUNTIME_ENV_PATH") else None,
+        Path("/app/.env"),
+    ]
+
+    file_kv: dict[str, str] = {}
+    for candidate in env_path_candidates:
+        if not candidate:
+            continue
+        if candidate.exists():
+            raw = dotenv_values(candidate)
+            for k, v in raw.items():
+                if not k:
+                    continue
+                file_kv[str(k)] = "" if v is None else str(v)
+            break
+
+    merged = dict(file_kv)
+    merged.update(os.environ)
+    return merged
 
 
 @dataclass(frozen=True)
@@ -67,7 +97,8 @@ def _require_int_env(name: str, raw: str | None, *, default: int, min_value: int
 
 def _sqlite_journal_mode() -> str:
     # Default to DELETE for Azure Files safety (WAL is risky on SMB/NFS).
-    mode = str(os.getenv("SQLITE_JOURNAL_MODE", "DELETE")).strip().upper() or "DELETE"
+    env = _merged_env()
+    mode = str(env.get("SQLITE_JOURNAL_MODE", "DELETE")).strip().upper() or "DELETE"
     allowed = {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "OFF", "WAL"}
     if mode not in allowed:
         raise ValueError(f"SQLITE_JOURNAL_MODE must be one of {sorted(allowed)}")
@@ -76,7 +107,8 @@ def _sqlite_journal_mode() -> str:
 
 def _sqlite_synchronous() -> str:
     # Default to FULL for durability on network filesystems.
-    level = str(os.getenv("SQLITE_SYNCHRONOUS", "FULL")).strip().upper() or "FULL"
+    env = _merged_env()
+    level = str(env.get("SQLITE_SYNCHRONOUS", "FULL")).strip().upper() or "FULL"
     allowed = {"OFF", "NORMAL", "FULL", "EXTRA"}
     if level not in allowed:
         raise ValueError(f"SQLITE_SYNCHRONOUS must be one of {sorted(allowed)}")
@@ -84,9 +116,10 @@ def _sqlite_synchronous() -> str:
 
 
 def _sqlite_busy_timeout_ms() -> int:
+    env = _merged_env()
     return _require_int_env(
         "SQLITE_BUSY_TIMEOUT_MS",
-        os.getenv("SQLITE_BUSY_TIMEOUT_MS"),
+        env.get("SQLITE_BUSY_TIMEOUT_MS"),
         default=5000,
         min_value=0,
         max_value=600_000,
@@ -94,10 +127,11 @@ def _sqlite_busy_timeout_ms() -> int:
 
 
 def _index_refresh_ttl_seconds() -> int:
+    env = _merged_env()
     # If 0, refresh every time (legacy behavior). Default to a small TTL.
     return _require_int_env(
         "INDEX_REFRESH_TTL_SECONDS",
-        os.getenv("INDEX_REFRESH_TTL_SECONDS"),
+        env.get("INDEX_REFRESH_TTL_SECONDS"),
         default=30,
         min_value=0,
         max_value=24 * 60 * 60,
@@ -105,7 +139,8 @@ def _index_refresh_ttl_seconds() -> int:
 
 
 def _resolve_index_lock_path(*, out_dir: Path, db_path: Path) -> Path:
-    raw = str(os.getenv("INDEX_LOCK_PATH", "")).strip()
+    env = _merged_env()
+    raw = str(env.get("INDEX_LOCK_PATH", "")).strip()
     if not raw:
         return db_path.parent / "index.lock"
     p = Path(raw).expanduser()
@@ -163,7 +198,26 @@ def _connect(db_path: Path) -> sqlite3.Connection:
             conn.row_factory = sqlite3.Row
 
             # IMPORTANT: avoid WAL by default (Azure Files/SMB). These are env-tunable.
-            conn.execute(f"PRAGMA journal_mode={_sqlite_journal_mode()}")
+            requested_journal_mode = _sqlite_journal_mode()
+            try:
+                conn.execute(f"PRAGMA journal_mode={requested_journal_mode}")
+            except sqlite3.OperationalError as e:
+                # Common on Azure Files/SMB: WAL requires sidecar files (-wal/-shm) + locking.
+                # If WAL (or other mode) fails with an I/O style error, fall back to DELETE.
+                msg = str(e).lower()
+                if (
+                    requested_journal_mode == "WAL"
+                    and ("unable to open database file" in msg or "disk i/o error" in msg)
+                ):
+                    _LOG.warning(
+                        "SQLite journal_mode=%s failed (%s); falling back to DELETE. db=%s",
+                        requested_journal_mode,
+                        str(e),
+                        str(db_path),
+                    )
+                    conn.execute("PRAGMA journal_mode=DELETE")
+                else:
+                    raise
             conn.execute(f"PRAGMA synchronous={_sqlite_synchronous()}")
             conn.execute("PRAGMA foreign_keys=ON")
             # NOTE: SQLite does not support parameter binding in PRAGMA statements.
