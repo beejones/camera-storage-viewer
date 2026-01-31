@@ -246,7 +246,8 @@ jobs:
           echo "AZURE_CONTAINER_NAME=${{ vars.AZURE_CONTAINER_NAME || 'camera-storage-viewer' }}"
           echo ""
           echo "APP_IMAGE=ghcr.io/${{ github.repository }}:latest"
-          echo "CADDY_IMAGE=${{ vars.CADDY_IMAGE || 'caddy:2-alpine' }}"
+          # Default to GHCR to avoid Docker Hub pull/rate-limit issues in ACI.
+          echo "CADDY_IMAGE=${{ vars.CADDY_IMAGE || 'ghcr.io/caddyserver/caddy:2' }}"
           echo "PUBLIC_DOMAIN=${{ vars.PUBLIC_DOMAIN || '' }}"
           echo "ACME_EMAIL=${{ vars.ACME_EMAIL || '' }}"
           echo ""
