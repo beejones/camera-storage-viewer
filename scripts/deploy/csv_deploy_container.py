@@ -453,6 +453,16 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--prefetch-images",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Pre-pull the Caddy image locally to validate it exists (default: enabled). "
+            "Use --no-prefetch-images in CI to avoid Docker dependency."
+        ),
+    )
+
+    parser.add_argument(
         "--cpu",
         type=float,
         default=None,
@@ -979,6 +989,26 @@ def main() -> None:
         else (str(os.getenv(VarsEnum.CADDY_IMAGE.value) or "").strip() or None)
     )
 
+    # Compute the effective Caddy image once (used for YAML generation and optional prefetch).
+    effective_caddy_image = (
+        caddy_image_override
+        or (compose_defaults.caddy_image if compose_defaults and compose_defaults.caddy_image else None)
+        or "caddy:2"
+    )
+
+    # Optional prefetch: fail fast if the sidecar image doesn't exist / can't be pulled.
+    # This is only relevant for deployments that include Caddy.
+    if bool(getattr(args, "prefetch_images", True)) and service in {"web-caddy", "full"}:
+        try:
+            print(f"🐳 [deploy] Prefetching sidecar image: {effective_caddy_image}")
+            docker_pull(image=effective_caddy_image)
+        except Exception as e:
+            raise SystemExit(
+                "[deploy] Failed to prefetch Caddy image. "
+                "Set CADDY_IMAGE (or pass --caddy-image), or run with --no-prefetch-images. "
+                f"Error: {e}"
+            )
+
     if service == "web":
         # Web-only container group: expose one port (default: 80).
         web_port = int((os.getenv(VarsEnum.WEB_PORT.value) or "").strip() or (str(compose_defaults.web_port) if compose_defaults and compose_defaults.web_port else "80"))
@@ -1034,11 +1064,7 @@ def main() -> None:
                 data_share_name=data_share_name,
                 public_domain=public_domain,
                 acme_email=acme_email,
-                caddy_image=(
-                    caddy_image_override
-                    or (compose_defaults.caddy_image if compose_defaults and compose_defaults.caddy_image else None)
-                    or "caddy:2"
-                ),
+                caddy_image=effective_caddy_image,
                 web_port=web_port,
                 web_command=(compose_defaults.web_command if compose_defaults else None),
             )
@@ -1100,11 +1126,7 @@ def main() -> None:
                 data_share_name=data_share_name,
                 public_domain=public_domain,
                 acme_email=acme_email,
-                caddy_image=(
-                    caddy_image_override
-                    or (compose_defaults.caddy_image if compose_defaults and compose_defaults.caddy_image else None)
-                    or "caddy:2"
-                ),
+                caddy_image=effective_caddy_image,
                 web_port=web_port,
                 web_command=(compose_defaults.web_command if compose_defaults else None),
             )
