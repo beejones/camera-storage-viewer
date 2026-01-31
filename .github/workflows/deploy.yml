@@ -247,7 +247,8 @@ jobs:
           echo ""
           echo "APP_IMAGE=ghcr.io/${{ github.repository }}:latest"
           # Default to GHCR to avoid Docker Hub pull/rate-limit issues in ACI.
-          echo "CADDY_IMAGE=${{ vars.CADDY_IMAGE || 'ghcr.io/caddyserver/caddy:2' }}"
+          # Note: handle the case where vars.CADDY_IMAGE is set but empty.
+          echo "CADDY_IMAGE=${{ (vars.CADDY_IMAGE != '' && vars.CADDY_IMAGE) || 'ghcr.io/caddyserver/caddy:2' }}"
           echo "PUBLIC_DOMAIN=${{ vars.PUBLIC_DOMAIN || '' }}"
           echo "ACME_EMAIL=${{ vars.ACME_EMAIL || '' }}"
           echo ""

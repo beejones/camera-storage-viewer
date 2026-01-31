@@ -993,8 +993,14 @@ def main() -> None:
     effective_caddy_image = (
         caddy_image_override
         or (compose_defaults.caddy_image if compose_defaults and compose_defaults.caddy_image else None)
-        or "caddy:2"
+        or "ghcr.io/caddyserver/caddy:2"
     )
+
+    # If compose defaults resolve to Docker Hub shorthand (e.g. "caddy:2-alpine"),
+    # prefer GHCR by default to avoid rate limits in ACI.
+    # Users can still force Docker Hub explicitly via --caddy-image or CADDY_IMAGE.
+    if not caddy_image_override and effective_caddy_image.startswith("caddy:"):
+        effective_caddy_image = "ghcr.io/caddyserver/caddy:2"
 
     # Optional prefetch: fail fast if the sidecar image doesn't exist / can't be pulled.
     # This is only relevant for deployments that include Caddy.
