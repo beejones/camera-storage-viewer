@@ -3,12 +3,13 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import time
 from shutil import which
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -67,14 +68,44 @@ class DbClip:
         return self.abs_path.name
 
     def find_thumbnail(self) -> Path | None:
-        for ext in (".jpg", ".jpeg", ".webp", ".png"):
+        exts = (".jpg", ".jpeg", ".webp", ".png")
+
+        def _nonempty_file(p: Path) -> bool:
+            try:
+                return p.exists() and p.is_file() and p.stat().st_size > 0
+            except FileNotFoundError:
+                return False
+
+        # 1) Exact sidecar: same basename, different extension.
+        for ext in exts:
             candidate = self.abs_path.with_suffix(ext)
-            if candidate.exists() and candidate.is_file():
-                try:
-                    if candidate.stat().st_size > 0:
-                        return candidate
-                except FileNotFoundError:
-                    continue
+            if _nonempty_file(candidate):
+                return candidate
+
+        # 2) Some cameras timestamp the thumbnail 1s before/after the video.
+        # Example:
+        #   vooraan_00_20260202163922.mp4
+        #   vooraan_00_20260202163923.jpg
+        name = self.abs_path.name
+        m = re.search(r"^(?P<prefix>.*?)(?P<ts>\d{14})(?P<suffix>\.[^.]+)$", name)
+        if not m:
+            return None
+
+        prefix = str(m.group("prefix"))
+        ts_raw = str(m.group("ts"))
+
+        try:
+            base = datetime.strptime(ts_raw, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+        for delta_seconds in (1, -1, 2, -2):
+            ts2 = (base + timedelta(seconds=delta_seconds)).strftime("%Y%m%d%H%M%S")
+            for ext in exts:
+                candidate = self.abs_path.with_name(prefix + ts2 + ext)
+                if _nonempty_file(candidate):
+                    return candidate
+
         return None
 
 
@@ -498,14 +529,21 @@ def list_clips_for_day(
     db_path: Path,
     camera_id: str,
     day: date,
+    tz_offset_minutes: int | None = None,
     refresh_index: bool = True,
 ) -> list[DbClip]:
     init_db(db_path)
     if refresh_index:
         refresh_index_if_stale(out_dir=out_dir, db_path=db_path)
 
+    # Timestamps are stored in UTC. By default, treat `day` as a UTC day.
+    # If tz_offset_minutes is provided, interpret `day` as a local calendar day for a user
+    # with that offset (minutes east of UTC), and translate that local-day window back to UTC.
     day_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
-    day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
+    if tz_offset_minutes is not None:
+        # Example: offset=+60 (CET). Local midnight corresponds to 23:00Z previous day.
+        day_start = day_start - timedelta(minutes=int(tz_offset_minutes))
+    day_end = (day_start + timedelta(days=1)) - timedelta(microseconds=1)
 
     with _connect(db_path) as conn:
         rows = conn.execute(

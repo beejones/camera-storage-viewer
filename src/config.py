@@ -34,6 +34,7 @@ class FtpConfig:
     passive_port_min: int
     passive_port_max: int
     permit_foreign_addresses: bool
+    rewrite_camera_absolute_paths: bool
     out_dir: Path
     incoming_dir: Path
     spool_dir: Path
@@ -141,6 +142,12 @@ def load_ftp_config(env: Mapping[str, str] | None = None) -> FtpConfig:
     # than the control connection when behind NAT/LB. pyftpdlib rejects this by default.
     permit_foreign_addresses = _truthy(str(env.get("FTP_PERMIT_FOREIGN_ADDRESSES", "true")))
 
+    # Some cameras are configured with an absolute "server directory" like /data/incoming/<camera_id>.
+    # Because users are jailed to their homedir, that can accidentally create a nested tree like:
+    #   incoming/<camera_id>/data/incoming/<camera_id>/...
+    # We can safely rewrite those paths back to "/" so uploads land in the intended homedir.
+    rewrite_camera_absolute_paths = _truthy(str(env.get("FTP_REWRITE_CAMERA_ABSOLUTE_PATHS", "true")))
+
     out_dir = Path(str(env.get("OUT_DIR", "/data")).strip() or "/data")
     incoming_dir = Path(str(env.get("FTP_INCOMING_DIR", out_dir / "incoming"))).expanduser()
     spool_dir = Path(str(env.get("FTP_SPOOL_DIR", out_dir / "spool"))).expanduser()
@@ -173,6 +180,7 @@ def load_ftp_config(env: Mapping[str, str] | None = None) -> FtpConfig:
         passive_port_min=passive_port_min,
         passive_port_max=passive_port_max,
         permit_foreign_addresses=permit_foreign_addresses,
+        rewrite_camera_absolute_paths=rewrite_camera_absolute_paths,
         out_dir=out_dir,
         incoming_dir=incoming_dir,
         spool_dir=spool_dir,
