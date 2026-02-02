@@ -79,6 +79,19 @@ class DbClip:
 
 
 def default_db_path(out_dir: Path) -> Path:
+    env = _merged_env()
+
+    # Optional override: store the index DB somewhere else (e.g. local ephemeral disk).
+    raw = str(env.get("INDEX_DB_PATH", "")).strip()
+    if raw:
+        p = Path(raw).expanduser()
+        return p if p.is_absolute() else (out_dir / p)
+
+    # Azure Files (SMB) is not a great match for SQLite, even with safer pragmas.
+    # The index DB is rebuildable, so prefer local ephemeral storage by default on Azure.
+    if str(env.get("AZURE_KEYVAULT_URI", "")).strip() and str(out_dir) == "/data":
+        return Path("/tmp/camera-storage-viewer") / "databases" / "index.sqlite"
+
     return out_dir / "databases" / "index.sqlite"
 
 

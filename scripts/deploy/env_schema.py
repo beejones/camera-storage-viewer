@@ -84,6 +84,14 @@ class VarsEnum(str, Enum):
     OUT_DIR = "OUT_DIR"
     WEB_PORT = "WEB_PORT"
     THUMBNAIL_GENERATION = "THUMBNAIL_GENERATION"
+
+    # Runtime (viewer index DB / SQLite tuning)
+    INDEX_DB_PATH = "INDEX_DB_PATH"
+    INDEX_LOCK_PATH = "INDEX_LOCK_PATH"
+    INDEX_REFRESH_TTL_SECONDS = "INDEX_REFRESH_TTL_SECONDS"
+    SQLITE_JOURNAL_MODE = "SQLITE_JOURNAL_MODE"
+    SQLITE_SYNCHRONOUS = "SQLITE_SYNCHRONOUS"
+    SQLITE_BUSY_TIMEOUT_MS = "SQLITE_BUSY_TIMEOUT_MS"
     FTP_BIND_HOST = "FTP_BIND_HOST"
     FTP_PORT = "FTP_PORT"
     FTP_PUBLIC_HOST = "FTP_PUBLIC_HOST"
@@ -168,6 +176,44 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
         key=VarsEnum.WEB_PORT,
         mandatory=False,
         default="8081",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+
+    # Viewer index DB + SQLite runtime tuning
+    EnvKeySpec(
+        key=VarsEnum.INDEX_DB_PATH,
+        mandatory=False,
+        default="",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.INDEX_LOCK_PATH,
+        mandatory=False,
+        default="",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.INDEX_REFRESH_TTL_SECONDS,
+        mandatory=False,
+        default="30",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.SQLITE_JOURNAL_MODE,
+        mandatory=False,
+        default="DELETE",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.SQLITE_SYNCHRONOUS,
+        mandatory=False,
+        default="FULL",
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.SQLITE_BUSY_TIMEOUT_MS,
+        mandatory=False,
+        default="5000",
         targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
     ),
     EnvKeySpec(
