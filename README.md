@@ -123,6 +123,24 @@ Apply moves (default skips files newer than 60s):
 python3 scripts/ingest_once.py --out-dir ./out --apply
 ```
 
+## Cleanup: remove empty per-camera `data/` directories
+
+Some cameras try to `CWD /data` while logged into a jailed per-camera FTP homedir.
+That can create an extra empty directory like:
+- `out/incoming/<camera_id>/data/`
+
+Dry-run:
+
+```bash
+python3 scripts/cleanup_empty_camera_data_dirs.py --out-dir /data
+```
+
+Apply deletions:
+
+```bash
+python3 scripts/cleanup_empty_camera_data_dirs.py --out-dir /data --apply
+```
+
 ## Viewer API (Local)
 
 List cameras:

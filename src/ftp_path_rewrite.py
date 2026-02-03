@@ -16,6 +16,13 @@ def rewrite_camera_absolute_path(*, ftp_path: str, camera_id: str) -> str:
 
     p = str(ftp_path).strip()
 
+    # Some cameras first `CWD /data` (or `CWD data`) and later use a more specific path.
+    # Under a jailed homedir, that creates an extra nested `data/` directory per camera.
+    # Rewrite those bare prefixes back to the jail root.
+    p_no_trailing = p.rstrip("/") if p not in {"/", ""} else p
+    if p_no_trailing in {"/data", "data"}:
+        return "/"
+
     cid = str(camera_id or "").strip()
     if not cid:
         return p

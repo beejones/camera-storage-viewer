@@ -14,10 +14,30 @@ if [ -n "${AZURE_KEYVAULT_URI:-}" ]; then
 
     # Managed Identity token for Key Vault
     TOKEN_URL="http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net"
+
+    # If a user-assigned Managed Identity is configured, ACI typically requires selecting it
+    # explicitly. The deploy script passes AZURE_CLIENT_ID for that identity.
+    if [ -n "${AZURE_CLIENT_ID:-}" ]; then
+        TOKEN_URL="${TOKEN_URL}&client_id=${AZURE_CLIENT_ID}"
+    fi
+
     TOKEN_JSON="$(curl -sS --fail -H 'Metadata: true' "${TOKEN_URL}")"
-    ACCESS_TOKEN="$(python -c 'import json,sys; print(json.loads(sys.stdin.read())["access_token"])' <<EOF
-${TOKEN_JSON}
-EOF
+    ACCESS_TOKEN="$(printf "%s" "${TOKEN_JSON}" | python - <<'PY'
+import json, sys
+doc = json.loads(sys.stdin.read() or '{}')
+tok = doc.get('access_token')
+if not tok:
+    # Avoid logging secrets; token is absent here. Log only error fields if present.
+    err = doc.get('error')
+    desc = doc.get('error_description')
+    keys = ','.join(sorted([k for k in doc.keys() if isinstance(k, str)]))
+    msg = f"[azure_start] ERROR: Managed Identity token response missing access_token (keys={keys})"
+    if err or desc:
+        msg += f" (error={err!s} desc={desc!s})"
+    print(msg, file=sys.stderr)
+    raise SystemExit(1)
+print(tok)
+PY
 )"
 
     # Normalize vault URL (ensure no trailing slash)

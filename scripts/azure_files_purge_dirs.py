@@ -155,7 +155,8 @@ def _az_storage_json(args: list[str], *, storage_account: str, storage_key: str)
     env = dict(os.environ)
     env["AZURE_STORAGE_ACCOUNT"] = storage_account
     env["AZURE_STORAGE_KEY"] = storage_key
-    out = subprocess.check_output(["az", *args, "-o", "json"], env=env)
+    # Capture stderr too: missing dirs (ResourceNotFound) are expected in some scans.
+    out = subprocess.check_output(["az", *args, "-o", "json", "--only-show-errors"], env=env, stderr=subprocess.STDOUT)
     return json.loads(out.decode("utf-8"))
 
 
@@ -163,7 +164,7 @@ def _az_storage_call(args: list[str], *, storage_account: str, storage_key: str)
     env = dict(os.environ)
     env["AZURE_STORAGE_ACCOUNT"] = storage_account
     env["AZURE_STORAGE_KEY"] = storage_key
-    subprocess.check_call(["az", *args], env=env)
+    subprocess.check_call(["az", *args], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
 
 def _list_entries(*, share_name: str, path: str, storage_account: str, storage_key: str) -> list[dict]:
@@ -291,6 +292,141 @@ def _purge_dir(
         stats["unknown"] += 1
 
 
+def _subtree_has_any_files(
+    *,
+    share_name: str,
+    dir_path: str,
+    storage_account: str,
+    storage_key: str,
+) -> bool:
+    """Return True if dir_path contains any files anywhere in its subtree."""
+
+    try:
+        entries = _list_entries(
+            share_name=share_name,
+            path=dir_path,
+            storage_account=storage_account,
+            storage_key=storage_key,
+        )
+    except subprocess.CalledProcessError:
+        # If it doesn't exist, treat as empty.
+        return False
+
+    for e in entries:
+        name = str(e.get("name") or "").strip()
+        typ = str(e.get("type") or "").strip().lower()
+        if not name:
+            continue
+        child = f"{dir_path}/{name}" if dir_path else name
+
+        if typ in {"file", "f"}:
+            return True
+        if typ in {"dir", "directory", "d"}:
+            if _subtree_has_any_files(
+                share_name=share_name,
+                dir_path=child,
+                storage_account=storage_account,
+                storage_key=storage_key,
+            ):
+                return True
+
+    return False
+
+
+def _prune_empty_camera_data_dirs(
+    *,
+    share_name: str,
+    incoming_root: str,
+    storage_account: str,
+    storage_key: str,
+    apply: bool,
+    stats: dict[str, int],
+) -> None:
+    """Delete incoming/<camera>/data directories if they contain no files.
+
+    Some cameras try `CWD /data` within their jailed homedir, creating an empty
+    nested directory per camera. This cleans those up without touching real uploads.
+    """
+
+    incoming_root = str(incoming_root).strip().strip("/") or "incoming"
+
+    try:
+        cameras = _list_entries(
+            share_name=share_name,
+            path=incoming_root,
+            storage_account=storage_account,
+            storage_key=storage_key,
+        )
+    except subprocess.CalledProcessError:
+        stats["missing_dirs"] += 1
+        print(f"missing_dir: {incoming_root}")
+        return
+
+    stats.setdefault("camera_dirs", 0)
+    stats.setdefault("camera_data_dirs", 0)
+    stats.setdefault("camera_data_dirs_pruned", 0)
+    stats.setdefault("camera_data_dirs_skipped_nonempty", 0)
+
+    for c in cameras:
+        name = str(c.get("name") or "").strip()
+        typ = str(c.get("type") or "").strip().lower()
+        if not name or typ not in {"dir", "directory", "d"}:
+            continue
+        stats["camera_dirs"] += 1
+
+        candidate = f"{incoming_root}/{name}/data"
+
+        # Existence check.
+        try:
+            _list_entries(
+                share_name=share_name,
+                path=candidate,
+                storage_account=storage_account,
+                storage_key=storage_key,
+            )
+        except subprocess.CalledProcessError:
+            continue
+
+        stats["camera_data_dirs"] += 1
+
+        if _subtree_has_any_files(
+            share_name=share_name,
+            dir_path=candidate,
+            storage_account=storage_account,
+            storage_key=storage_key,
+        ):
+            stats["camera_data_dirs_skipped_nonempty"] += 1
+            print(f"skip_nonempty: {candidate}")
+            continue
+
+        if not apply:
+            print(f"would_delete: {candidate}")
+            continue
+
+        # Purge any empty subdirs, then delete the top-level candidate.
+        _purge_dir(
+            share_name=share_name,
+            dir_path=candidate,
+            storage_account=storage_account,
+            storage_key=storage_key,
+            apply=True,
+            stats=stats,
+        )
+        try:
+            _delete_empty_dir(
+                share_name=share_name,
+                dir_path=candidate,
+                storage_account=storage_account,
+                storage_key=storage_key,
+            )
+            stats["dirs_deleted"] += 1
+        except subprocess.CalledProcessError:
+            stats["dir_delete_errors"] += 1
+        else:
+            stats["camera_data_dirs_pruned"] += 1
+            print(f"deleted: {candidate}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Recursively delete Azure Files directories (via Azure CLI)")
     parser.add_argument("--resource-group", "-g", default=None)
@@ -305,7 +441,19 @@ def main() -> None:
         default=None,
         help="Optional Azure Files share name. If set, skips ACI mount auto-detection.",
     )
-    parser.add_argument("--dirs", nargs="+", required=True, help="Directory names at the share root to purge (e.g. incoming spool)")
+
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dirs", nargs="+", help="Directory names at the share root to purge (e.g. incoming spool)")
+    mode.add_argument(
+        "--prune-empty-camera-data-dirs",
+        action="store_true",
+        help="Delete incoming/<camera>/data directories only if they contain no files (safe cleanup).",
+    )
+    parser.add_argument(
+        "--incoming-root",
+        default="incoming",
+        help="Incoming root directory in the share (default: incoming). Used with --prune-empty-camera-data-dirs.",
+    )
     parser.add_argument("--apply", action="store_true", help="Actually delete. Without this flag, runs dry-run and prints files.")
 
     args = parser.parse_args()
@@ -343,30 +491,41 @@ def main() -> None:
         "unknown": 0,
     }
 
-    for d in args.dirs:
-        d = str(d).strip().lstrip("/")
-        if not d:
-            continue
-        print(f"Purging: {d} (apply={bool(args.apply)})")
-        _purge_dir(
+    if args.prune_empty_camera_data_dirs:
+        print(f"Pruning empty per-camera data dirs under: {args.incoming_root} (apply={bool(args.apply)})")
+        _prune_empty_camera_data_dirs(
             share_name=mount.share_name,
-            dir_path=d,
+            incoming_root=str(args.incoming_root),
             storage_account=mount.storage_account,
             storage_key=key,
             apply=bool(args.apply),
             stats=stats,
         )
-        if args.apply:
-            try:
-                _delete_empty_dir(
-                    share_name=mount.share_name,
-                    dir_path=d,
-                    storage_account=mount.storage_account,
-                    storage_key=key,
-                )
-                stats["dirs_deleted"] += 1
-            except subprocess.CalledProcessError:
-                stats["dir_delete_errors"] += 1
+    else:
+        for d in args.dirs or []:
+            d = str(d).strip().lstrip("/")
+            if not d:
+                continue
+            print(f"Purging: {d} (apply={bool(args.apply)})")
+            _purge_dir(
+                share_name=mount.share_name,
+                dir_path=d,
+                storage_account=mount.storage_account,
+                storage_key=key,
+                apply=bool(args.apply),
+                stats=stats,
+            )
+            if args.apply:
+                try:
+                    _delete_empty_dir(
+                        share_name=mount.share_name,
+                        dir_path=d,
+                        storage_account=mount.storage_account,
+                        storage_key=key,
+                    )
+                    stats["dirs_deleted"] += 1
+                except subprocess.CalledProcessError:
+                    stats["dir_delete_errors"] += 1
 
     print(
         "summary:" + " ".join(
