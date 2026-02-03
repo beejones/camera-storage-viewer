@@ -3,12 +3,14 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
 
 from src.config import load_ftp_config
+from src.ftp_path_rewrite import rewrite_camera_absolute_path
 
 
 _LOG = logging.getLogger("src.ftp")
@@ -21,11 +23,58 @@ class _ViewerFTPHandler(FTPHandler):
     Also, partial/failed uploads can leave 0-byte files behind on Azure Files.
     """
 
+    # Configurable via FTP_REWRITE_CAMERA_ABSOLUTE_PATHS.
+    rewrite_camera_absolute_paths: bool = True
+
+    def _camera_id_for_session(self) -> str | None:
+        try:
+            root = getattr(self.fs, "root", None)
+            if not root:
+                return None
+            return os.path.basename(os.path.normpath(str(root)))
+        except Exception:
+            return None
+
+    def _rewrite_ftp_path_if_needed(self, ftp_path: str) -> str:
+        if not self.rewrite_camera_absolute_paths:
+            return ftp_path
+        camera_id = self._camera_id_for_session()
+        if not camera_id:
+            return ftp_path
+
+        rewritten = rewrite_camera_absolute_path(ftp_path=ftp_path, camera_id=camera_id)
+        if rewritten != ftp_path:
+            _LOG.info(
+                "Rewrote camera upload path: user=%s camera_id=%s from=%s to=%s",
+                getattr(self, "username", "?"),
+                camera_id,
+                ftp_path,
+                rewritten,
+            )
+        return rewritten
+
+    def pre_process_command(self, line: str, cmd: str, arg: str | None) -> None:
+        # Rewrite the *FTP* argument before pyftpdlib converts it into a filesystem path.
+        # This is the safest way to prevent nested `incoming/<camera>/data/...` trees.
+        try:
+            if arg and cmd in {"CWD", "XCWD", "MKD", "XMKD", "STOR", "APPE"}:
+                # Only touch path-like args (avoid things like LIST -la).
+                if arg.startswith("/") or arg.startswith("data") or arg.startswith("incoming"):
+                    new_arg = self._rewrite_ftp_path_if_needed(arg)
+                    if new_arg != arg:
+                        arg = new_arg
+                        # Keep logline consistent for common single-word commands.
+                        line = f"{cmd} {arg}"
+        except Exception:
+            pass
+
+        return super().pre_process_command(line, cmd, arg)
+
     def ftp_CWD(self, path: str) -> None:
         try:
-            fs_path = self.fs.ftp2fs(path)
-            if fs_path and not os.path.isdir(fs_path):
-                os.makedirs(fs_path, exist_ok=True)
+            # pyftpdlib typically passes a filesystem path here (already ftp2fs'd).
+            if path and not os.path.isdir(path):
+                os.makedirs(path, exist_ok=True)
         except Exception:
             # Fall back to default behavior (will respond 550 if invalid)
             pass
@@ -33,8 +82,7 @@ class _ViewerFTPHandler(FTPHandler):
 
     def ftp_STOR(self, file: str, mode: str = "w") -> None:
         try:
-            fs_path = self.fs.ftp2fs(file)
-            parent = os.path.dirname(fs_path)
+            parent = os.path.dirname(file)
             if parent and not os.path.isdir(parent):
                 os.makedirs(parent, exist_ok=True)
         except Exception:
@@ -71,13 +119,14 @@ def serve() -> None:
     _ensure_dir(cfg.spool_dir)
 
     _LOG.info(
-        "FTP config: bind=%s:%s public_host=%s passive_ports=%s-%s permit_foreign_addresses=%s out_dir=%s incoming_dir=%s spool_dir=%s",
+        "FTP config: bind=%s:%s public_host=%s passive_ports=%s-%s permit_foreign_addresses=%s rewrite_camera_absolute_paths=%s out_dir=%s incoming_dir=%s spool_dir=%s",
         cfg.bind_host,
         cfg.port,
         cfg.public_host or "(none)",
         cfg.passive_port_min,
         cfg.passive_port_max,
         cfg.permit_foreign_addresses,
+        cfg.rewrite_camera_absolute_paths,
         cfg.out_dir,
         cfg.incoming_dir,
         cfg.spool_dir,
@@ -100,6 +149,8 @@ def serve() -> None:
 
     handler = _ViewerFTPHandler
     handler.authorizer = authorizer
+
+    handler.rewrite_camera_absolute_paths = bool(cfg.rewrite_camera_absolute_paths)
 
     handler.passive_ports = range(cfg.passive_port_min, cfg.passive_port_max + 1)
 
