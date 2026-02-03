@@ -239,7 +239,7 @@ def list_cameras() -> list[CameraOut]:
 def list_clips(
     camera_id: str,
     day: Annotated[date, Query(alias="date")],
-    tz_offset_minutes: Annotated[int | None, Query(default=None, ge=-840, le=840)] = None,
+    tz_offset_minutes: Annotated[int | None, Query(ge=-840, le=840)] = None,
 ) -> list[ClipOut]:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)

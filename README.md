@@ -47,8 +47,27 @@ git rebase upstream/main
 4) Resolve any conflicts, run tests, and push your branch:
 
 ```bash
-python -m pytest
+make test
 git push
+```
+
+## Development: Python env + tests
+
+The tests require Python dependencies like `fastapi` and `pytest-asyncio`.
+If you run `pytest` from your global Python, you may see collection errors like:
+
+- `ModuleNotFoundError: No module named 'fastapi'`
+
+Recommended:
+
+```bash
+make test
+```
+
+Or explicitly run pytest via the repo virtualenv:
+
+```bash
+./.venv/bin/python -m pytest -q
 ```
 
 Prototype (this step): an **FTP server** you can point one or more cameras at (starting with Reolink), so we can validate uploads and networking (PASV, port ranges) end-to-end.

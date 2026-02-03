@@ -28,6 +28,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+# Keep env var names as constants (tests enforce no literal keys in
+# os.getenv/os.environ usage inside scripts/deploy).
+ENV_ACI_RESTART_POLICY = "ACI_RESTART_POLICY"
+ENV_AZURE_RESTART_POLICY = "AZURE_RESTART_POLICY"
+
+
 # Add scripts dir to path to allow importing sibling modules when running as a script.
 sys.path.append(str(Path(__file__).parent))
 
@@ -1234,8 +1240,8 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
 
         restart_policy = (
             str(getattr(args, "restart_policy", "") or "").strip()
-            or str(os.getenv("ACI_RESTART_POLICY", "") or "").strip()
-            or str(os.getenv("AZURE_RESTART_POLICY", "") or "").strip()
+            or str(os.getenv(ENV_ACI_RESTART_POLICY, "") or "").strip()
+            or str(os.getenv(ENV_AZURE_RESTART_POLICY, "") or "").strip()
             or "OnFailure"
         )
     
