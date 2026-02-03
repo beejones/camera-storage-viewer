@@ -82,6 +82,33 @@ class _ViewerFTPHandler(FTPHandler):
             return super().ftp_STOR(file, mode)
         return super().ftp_STOR(file, mode)
 
+    def ftp_MKD(self, path: str) -> None:
+        """Create directories in a camera-friendly way.
+
+        Cameras often try to create year/month/day directories (sometimes using
+        an absolute server directory like `/data/incoming/<camera_id>/...`).
+        We rewrite those paths into the jailed root, and treat "already exists"
+        as success so the camera continues to `CWD`/`STOR`.
+        """
+
+        try:
+            path = self._rewrite_path_if_needed(path)
+            fs_path = self.fs.ftp2fs(path)
+            if fs_path:
+                os.makedirs(fs_path, exist_ok=True)
+
+            # Respond success even if it already existed.
+            self.respond(f'257 "{path}" directory created.')
+            return
+        except OSError as e:
+            if e.errno == errno.ENOSPC:
+                _LOG.error("No space left on device while creating directory for MKD: %s", path)
+                self.respond("452 No space left on device.")
+                return
+            return super().ftp_MKD(path)
+        except Exception:
+            return super().ftp_MKD(path)
+
     def on_incomplete_file_received(self, file: str) -> None:
         # pyftpdlib calls this when the client closes early / transfer fails.
         # Delete the partial file so we don't accumulate confusing 0-byte entries.
