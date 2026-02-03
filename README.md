@@ -122,9 +122,6 @@ Note: some cameras can be configured with an absolute "server directory" like `/
 When used with this server (which jails each user to `out/incoming/<camera_id>`), that can accidentally create
 a duplicated nested tree like `out/incoming/<camera_id>/data/incoming/<camera_id>/...`.
 
-By default, the FTP server rewrites those common absolute paths back to `/` to prevent duplicate storage.
-You can disable that behavior with `FTP_REWRITE_CAMERA_ABSOLUTE_PATHS=false`.
-
 ## Ingest (Move uploads into library)
 
 Uploads initially land under `out/incoming/`. The viewer can index those directly, but for a stable library layout you can ingest them into:
