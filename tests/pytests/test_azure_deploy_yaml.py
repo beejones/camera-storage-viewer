@@ -44,7 +44,7 @@ def test_generate_deploy_yaml_defaults(base_args):
     yaml_str = yaml_helpers.generate_deploy_yaml(**base_args)
     data = yaml.safe_load(yaml_str)
 
-    assert data["properties"]["restartPolicy"] == "Always"
+    assert data["properties"]["restartPolicy"] == "OnFailure"
     
     containers = data["properties"]["containers"]
     assert len(containers) == 2
@@ -74,7 +74,7 @@ def test_generate_deploy_yaml_with_other(base_args):
     yaml_str = yaml_helpers.generate_deploy_yaml(**base_args)
     data = yaml.safe_load(yaml_str)
 
-    assert data["properties"]["restartPolicy"] == "Always"
+    assert data["properties"]["restartPolicy"] == "OnFailure"
     
     containers = data["properties"]["containers"]
     assert len(containers) == 3

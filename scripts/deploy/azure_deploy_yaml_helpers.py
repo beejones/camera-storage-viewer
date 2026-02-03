@@ -47,9 +47,9 @@ def generate_deploy_yaml(
     other_image: str | None = None,
     other_cpu_cores: float = 0.5,
     other_memory_gb: float = 0.5,
-    restart_policy: str = "Always",
+    restart_policy: str = "OnFailure",
 ) -> str:
-    restart_policy_norm = str(restart_policy or "").strip() or "Always"
+    restart_policy_norm = str(restart_policy or "").strip() or "OnFailure"
     if restart_policy_norm not in {"Always", "OnFailure", "Never"}:
         raise ValueError("restart_policy must be one of: Always, OnFailure, Never")
 

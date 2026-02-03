@@ -139,7 +139,7 @@ def generate_deploy_yaml(
     other_image: str | None = None,
     other_cpu_cores: float = 0.5,
     other_memory_gb: float = 0.5,
-    restart_policy: str = "Always",
+    restart_policy: str = "OnFailure",
 ) -> str:
     """Back-compat re-export for tests and external callers."""
 
@@ -228,7 +228,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         default=None,
         choices=["Always", "OnFailure", "Never"],
         help=(
-            "ACI container group restart policy. Default is Always. "
+            "ACI container group restart policy. Default is OnFailure. "
             "For debugging CrashLoopBackOff, use Never so the container does not restart automatically."
         ),
     )
@@ -1236,7 +1236,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             str(getattr(args, "restart_policy", "") or "").strip()
             or str(os.getenv("ACI_RESTART_POLICY", "") or "").strip()
             or str(os.getenv("AZURE_RESTART_POLICY", "") or "").strip()
-            or "Always"
+            or "OnFailure"
         )
     
         yaml_text = generate_deploy_yaml(

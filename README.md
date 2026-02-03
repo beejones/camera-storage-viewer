@@ -263,14 +263,14 @@ See: [docs/deploy/HOOKS.md](docs/deploy/HOOKS.md)
 
 ## Debugging deploys: restart policy (ACI)
 
-By default, Azure Container Instances restarts failed containers (`restartPolicy: Always`), which can make debugging CrashLoopBackOff noisy.
+By default, Azure Container Instances restarts the container group when a container exits non-zero (`restartPolicy: OnFailure`), which can make debugging CrashLoopBackOff noisy.
 
 You can control this via the deploy script:
 
-- Normal (default, keep restarting):
+- Normal (default, restart on failure):
 
 ```bash
-python3 scripts/deploy/azure_deploy_container.py --restart-policy Always
+python3 scripts/deploy/azure_deploy_container.py --restart-policy OnFailure
 ```
 
 - Debug (do not restart on failure; container stays terminated so you can inspect logs/state):
@@ -279,10 +279,10 @@ python3 scripts/deploy/azure_deploy_container.py --restart-policy Always
 python3 scripts/deploy/azure_deploy_container.py --restart-policy Never
 ```
 
-- Optional middle ground (restart only on non-zero exit):
+- Optional: always restart (even on clean exit):
 
 ```bash
-python3 scripts/deploy/azure_deploy_container.py --restart-policy OnFailure
+python3 scripts/deploy/azure_deploy_container.py --restart-policy Always
 ```
 
 You can also set `ACI_RESTART_POLICY` (or `AZURE_RESTART_POLICY`) in your shell instead of passing the flag.

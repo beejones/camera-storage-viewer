@@ -41,30 +41,34 @@ if [ -n "${AZURE_KEYVAULT_URI:-}" ]; then
         exit 1
     fi
 
-    ACCESS_TOKEN="$(printf "%s" "${TOKEN_JSON}" | python - <<'PY'
+    ACCESS_TOKEN="$(
+        printf "%s" "${TOKEN_JSON}" | python -c "
 import json, sys
 raw = sys.stdin.read() or ''
 try:
     doc = json.loads(raw)
 except Exception:
     print('[azure_start] ERROR: IMDS token response was not valid JSON', file=sys.stderr)
-    # Raw may include tokens only on success; we're in the failure path.
-    print(f"[azure_start] IMDS raw prefix: {raw[:200]!r}", file=sys.stderr)
+    # On success the response contains an access_token; we're in a failure path so it's safe
+    # to print a small prefix to help debugging.
+    print(f'[azure_start] IMDS raw prefix: {raw[:200]!r}', file=sys.stderr)
     raise SystemExit(1)
+
 tok = doc.get('access_token')
 if not tok:
     # Avoid logging secrets; token is absent here. Log only error fields if present.
     err = doc.get('error')
     desc = doc.get('error_description')
     keys = ','.join(sorted([k for k in doc.keys() if isinstance(k, str)]))
-    msg = f"[azure_start] ERROR: Managed Identity token response missing access_token (keys={keys})"
+    msg = f'[azure_start] ERROR: Managed Identity token response missing access_token (keys={keys})'
     if err or desc:
-        msg += f" (error={err!s} desc={desc!s})"
+        msg += f' (error={err!s} desc={desc!s})'
     print(msg, file=sys.stderr)
     raise SystemExit(1)
+
 print(tok)
-PY
-)"
+" 
+    )"
 
     # Normalize vault URL (ensure no trailing slash)
     VAULT_URL="${AZURE_KEYVAULT_URI%/}"
