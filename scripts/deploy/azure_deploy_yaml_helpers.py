@@ -47,7 +47,12 @@ def generate_deploy_yaml(
     other_image: str | None = None,
     other_cpu_cores: float = 0.5,
     other_memory_gb: float = 0.5,
+    restart_policy: str = "Always",
 ) -> str:
+    restart_policy_norm = str(restart_policy or "").strip() or "Always"
+    if restart_policy_norm not in {"Always", "OnFailure", "Never"}:
+        raise ValueError("restart_policy must be one of: Always, OnFailure, Never")
+
     app_memory_gb = normalize_aci_memory_gb(app_memory_gb)
     tls_memory_gb = normalize_aci_memory_gb(caddy_memory_gb)
     other_mem_gb_norm = normalize_aci_memory_gb(other_memory_gb)
@@ -235,7 +240,7 @@ def generate_deploy_yaml(
         indent(12, "mountPath: /config"),
         "",
         indent(2, "osType: Linux"),
-        indent(2, "restartPolicy: Always"),
+        indent(2, f"restartPolicy: {restart_policy_norm}"),
         indent(2, "ipAddress:"),
         indent(4, "type: Public"),
         indent(4, f"dnsNameLabel: {dns_label}"),

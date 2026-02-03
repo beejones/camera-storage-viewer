@@ -21,10 +21,36 @@ if [ -n "${AZURE_KEYVAULT_URI:-}" ]; then
         TOKEN_URL="${TOKEN_URL}&client_id=${AZURE_CLIENT_ID}"
     fi
 
-    TOKEN_JSON="$(curl -sS --fail -H 'Metadata: true' "${TOKEN_URL}")"
+    # NOTE: explicitly bypass proxies for IMDS and retry transient errors.
+    TOKEN_JSON="$(
+        curl -sS --fail --noproxy '*' \
+          --connect-timeout 2 --max-time 10 \
+          --retry 5 --retry-all-errors --retry-delay 1 \
+          -H 'Metadata: true' "${TOKEN_URL}" 2>&1
+    )"
+    CURL_STATUS=$?
+    if [ ${CURL_STATUS} -ne 0 ]; then
+        echo "[azure_start] ERROR: Failed to fetch Managed Identity token from IMDS (curl_exit=${CURL_STATUS})" >&2
+        # Safe to log: should contain only curl error text.
+        printf "%s\n" "${TOKEN_JSON}" | head -c 800 >&2 || true
+        echo >&2
+        exit 1
+    fi
+    if [ -z "${TOKEN_JSON}" ]; then
+        echo "[azure_start] ERROR: IMDS token response was empty" >&2
+        exit 1
+    fi
+
     ACCESS_TOKEN="$(printf "%s" "${TOKEN_JSON}" | python - <<'PY'
 import json, sys
-doc = json.loads(sys.stdin.read() or '{}')
+raw = sys.stdin.read() or ''
+try:
+    doc = json.loads(raw)
+except Exception:
+    print('[azure_start] ERROR: IMDS token response was not valid JSON', file=sys.stderr)
+    # Raw may include tokens only on success; we're in the failure path.
+    print(f"[azure_start] IMDS raw prefix: {raw[:200]!r}", file=sys.stderr)
+    raise SystemExit(1)
 tok = doc.get('access_token')
 if not tok:
     # Avoid logging secrets; token is absent here. Log only error fields if present.

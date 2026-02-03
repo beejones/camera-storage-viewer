@@ -261,6 +261,32 @@ Downstream consumers can customize the deployment process (e.g., override images
 
 See: [docs/deploy/HOOKS.md](docs/deploy/HOOKS.md)
 
+## Debugging deploys: restart policy (ACI)
+
+By default, Azure Container Instances restarts failed containers (`restartPolicy: Always`), which can make debugging CrashLoopBackOff noisy.
+
+You can control this via the deploy script:
+
+- Normal (default, keep restarting):
+
+```bash
+python3 scripts/deploy/azure_deploy_container.py --restart-policy Always
+```
+
+- Debug (do not restart on failure; container stays terminated so you can inspect logs/state):
+
+```bash
+python3 scripts/deploy/azure_deploy_container.py --restart-policy Never
+```
+
+- Optional middle ground (restart only on non-zero exit):
+
+```bash
+python3 scripts/deploy/azure_deploy_container.py --restart-policy OnFailure
+```
+
+You can also set `ACI_RESTART_POLICY` (or `AZURE_RESTART_POLICY`) in your shell instead of passing the flag.
+
 ## Migration Guide
 
 ### Renamed Variables (Jan 2026)
