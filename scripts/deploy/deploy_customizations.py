@@ -17,7 +17,6 @@ for upload/deploy.
 from __future__ import annotations
 
 import atexit
-import sys
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -69,6 +68,71 @@ def _write_slim_dotenv(path: Path, kv: dict[str, str], header_lines: list[str]) 
         lines.append(f"{k}={kv[k]}")
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _comment_out_unknown_keys(text: str, *, keys_to_comment: set[str]) -> str:
+    lines: list[str] = []
+    for raw in text.splitlines():
+        stripped = raw.lstrip()
+        if not stripped or stripped.startswith("#"):
+            lines.append(raw)
+            continue
+
+        line = stripped
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+
+        if "=" not in line:
+            lines.append(raw)
+            continue
+
+        key = line.split("=", 1)[0].strip()
+        if key in keys_to_comment:
+            lines.append(f"# {raw}")
+        else:
+            lines.append(raw)
+
+    # Preserve trailing newline for nicer diffs / editor UX.
+    return "\n".join(lines) + "\n"
+
+
+def _merge_dotenv_text(base_text: str, updates: dict[str, str]) -> str:
+    # Best-effort: update existing assignments in-place, and append missing keys.
+    # Preserves comments and unknown keys from the base text.
+    remaining = dict(updates)
+    out_lines: list[str] = []
+
+    for raw in base_text.splitlines():
+        stripped = raw.lstrip()
+        if not stripped or stripped.startswith("#"):
+            out_lines.append(raw)
+            continue
+
+        leading = raw[: len(raw) - len(stripped)]
+        export_prefix = ""
+        line = stripped
+        if line.startswith("export "):
+            export_prefix = "export "
+            line = line[len("export ") :].lstrip()
+
+        if "=" not in line:
+            out_lines.append(raw)
+            continue
+
+        key, _value = line.split("=", 1)
+        key = key.strip()
+        if key in remaining:
+            out_lines.append(f"{leading}{export_prefix}{key}={remaining.pop(key)}")
+        else:
+            out_lines.append(raw)
+
+    if remaining:
+        if out_lines and out_lines[-1].strip():
+            out_lines.append("")
+        for k in sorted(remaining.keys()):
+            out_lines.append(f"{k}={remaining[k]}")
+
+    return "\n".join(out_lines) + "\n"
 
 
 def _aci_port_limit_validate(*, ftp_port: int, passive_min: int, passive_max: int) -> None:
@@ -152,25 +216,62 @@ class CameraStorageViewerHooks:
 
             atexit.register(_restore_env)
 
-        # Deploy-time file: keep as source of truth, but preserve a backup.
-        if deploy_env_path.exists() and not deploy_full_path.exists():
+        # Deploy-time file: upstream validates `.env.deploy` strictly and rejects unknown keys.
+        # This repo may carry extra app-specific keys there (e.g. FTP_CPU_CORES) which upstream
+        # doesn't know. If present, temporarily comment them out for validation, but restore the
+        # original file on exit while merging any upstream write-backs (AZURE_* IDs, etc).
+        if deploy_env_path.exists():
             try:
-                deploy_full_path.write_text(deploy_env_path.read_text(encoding="utf-8"), encoding="utf-8")
+                deploy_text = deploy_env_path.read_text(encoding="utf-8")
+            except Exception:
+                deploy_text = ""
+
+            deploy_kv = _parse_dotenv_file(deploy_env_path)
+
+            keys_to_comment: set[str] = set()
+            # Known viewer-only keys that have shown up in `.env.deploy` and are rejected by
+            # upstream strict validation.
+            keys_to_comment |= {k for k in ("FTP_CPU_CORES", "FTP_MEMORY_GB") if k in deploy_kv}
+
+            try:
+                from env_schema import DEPLOY_SCHEMA, EnvTarget  # type: ignore
+
+                allowed = {
+                    spec.key.value
+                    for spec in DEPLOY_SCHEMA
+                    if EnvTarget.DOTENV_DEPLOY in getattr(spec, "targets", [])
+                }
+                keys_to_comment |= {k for k in deploy_kv.keys() if k not in allowed}
+            except Exception:
+                # Conservative fallback: FTP_* are typically runtime/app keys, not deploy schema keys.
+                keys_to_comment |= {k for k in deploy_kv.keys() if k.startswith("FTP_")}
+
+            if keys_to_comment:
+                # Ensure values are still available via ctx.env during the run.
+                for k in sorted(keys_to_comment):
+                    env.setdefault(k, deploy_kv.get(k, ""))
+
+                if not deploy_full_path.exists():
+                    deploy_full_path.write_text(deploy_text, encoding="utf-8")
+
+                deploy_env_path.write_text(
+                    _comment_out_unknown_keys(deploy_text, keys_to_comment=keys_to_comment),
+                    encoding="utf-8",
+                )
 
                 def _restore_deploy_env() -> None:
                     try:
-                        if deploy_full_path.exists():
-                            deploy_env_path.write_text(
-                                deploy_full_path.read_text(encoding="utf-8"),
-                                encoding="utf-8",
-                            )
-                            deploy_full_path.unlink(missing_ok=True)
+                        if not deploy_full_path.exists():
+                            return
+                        base_text = deploy_full_path.read_text(encoding="utf-8")
+                        current_kv = _parse_dotenv_file(deploy_env_path)
+                        merged = _merge_dotenv_text(base_text, current_kv)
+                        deploy_env_path.write_text(merged, encoding="utf-8")
+                        deploy_full_path.unlink(missing_ok=True)
                     except Exception:
                         return
 
                 atexit.register(_restore_deploy_env)
-            except Exception:
-                pass
 
         # If wrapper didn't already extend upload prefixes, do it here.
         if args is not None and hasattr(args, "upload_env_prefixes"):

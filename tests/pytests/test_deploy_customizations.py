@@ -76,3 +76,32 @@ def test_build_deploy_plan_sets_metadata_and_ports():
     assert plan.caddy_image == "ghcr.io/example/caddy:2-alpine"
     assert plan.app_port == 8081
     assert plan.ftp_passive_range == "50000-50003"
+
+
+def test_pre_validate_env_comments_out_unknown_deploy_keys(tmp_path: Path):
+    hooks = deploy_customizations.get_hooks()
+
+    # Simulate a repo root with a deploy env that includes viewer-specific keys.
+    (tmp_path / ".env.deploy").write_text(
+        "\n".join(
+            [
+                "AZURE_RESOURCE_GROUP=rg",
+                "FTP_CPU_CORES=0.25",
+                "FTP_MEMORY_GB=0.5",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    ctx = deploy_hooks.DeployContext(
+        repo_root=tmp_path,
+        env={},
+        args=argparse.Namespace(service="web"),
+    )
+
+    hooks.pre_validate_env(ctx)
+
+    deploy_text = (tmp_path / ".env.deploy").read_text(encoding="utf-8")
+    assert "# FTP_CPU_CORES=0.25" in deploy_text
+    assert "# FTP_MEMORY_GB=0.5" in deploy_text
