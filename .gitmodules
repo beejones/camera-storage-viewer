@@ -1,0 +1,3 @@
+[submodule "scripts/deploy/_upstream"]
+	path = scripts/deploy/_upstream
+	url = https://github.com/beejones/protected-azure-container

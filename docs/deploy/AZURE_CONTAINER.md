@@ -36,6 +36,15 @@ Reason: ACI container groups can expose at most **5 public ports**. FTP typicall
 
 Deployment reads `.env` first, then `.env.deploy` on top (deploy-time overrides).
 
+## Deploy engine integration
+
+This repo integrates the upstream deploy engine **protected-azure-container** as a pinned git submodule at `scripts/deploy/_upstream`.
+
+- Use the wrapper scripts in `scripts/deploy/` as the stable entrypoints.
+- Keep repo-specific behavior in `scripts/deploy/deploy_customizations.py` (hooks).
+
+After cloning, run `git submodule update --init --recursive` (or `python scripts/sync_deploy_upstream.py --init`).
+
 ## Step 1 — Create Azure Resources
 
 The deploy script auto-creates resources if they don't exist:
