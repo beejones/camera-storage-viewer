@@ -21,7 +21,9 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
-_UPSTREAM_RUNTIME_KEYS = {"BASIC_AUTH_USER", "BASIC_AUTH_HASH", "APP_SECRET"}
+# Upstream PR #18 splits secrets into `.env.secrets`.
+# Keep `.env` slimmed to only upstream runtime keys during strict validation.
+_UPSTREAM_RUNTIME_KEYS = {"BASIC_AUTH_USER"}
 
 
 def _env_view(ctx: Any) -> dict[str, Any]:
@@ -234,13 +236,9 @@ class CameraStorageViewerHooks:
             keys_to_comment |= {k for k in ("FTP_CPU_CORES", "FTP_MEMORY_GB") if k in deploy_kv}
 
             try:
-                from env_schema import DEPLOY_SCHEMA, EnvTarget  # type: ignore
+                from env_schema import DEPLOY_SCHEMA  # type: ignore
 
-                allowed = {
-                    spec.key.value
-                    for spec in DEPLOY_SCHEMA
-                    if EnvTarget.DOTENV_DEPLOY in getattr(spec, "targets", [])
-                }
+                allowed = {spec.key.value for spec in DEPLOY_SCHEMA}
                 keys_to_comment |= {k for k in deploy_kv.keys() if k not in allowed}
             except Exception:
                 # Conservative fallback: FTP_* are typically runtime/app keys, not deploy schema keys.
@@ -273,11 +271,12 @@ class CameraStorageViewerHooks:
 
                 atexit.register(_restore_deploy_env)
 
-        # If wrapper didn't already extend upload prefixes, do it here.
-        if args is not None and hasattr(args, "upload_env_prefixes"):
-            current = str(getattr(args, "upload_env_prefixes") or "").strip()
-            if current == "BASIC_AUTH_":
-                setattr(args, "upload_env_prefixes", "BASIC_AUTH_,FTP_")
+        # Prefer uploading the full runtime env file content. This repo keeps
+        # runtime secrets separate in `.env.secrets`, so uploading `.env` raw is
+        # expected and avoids accidentally dropping viewer-specific keys.
+        if args is not None and hasattr(args, "upload_env_raw"):
+            if not bool(getattr(args, "upload_env_raw")):
+                setattr(args, "upload_env_raw", True)
 
     def post_validate_env(self, ctx: Any) -> None:
         env = _env_view(ctx)

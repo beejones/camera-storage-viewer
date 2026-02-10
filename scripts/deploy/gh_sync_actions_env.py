@@ -8,9 +8,10 @@ This wrapper exists because camera-storage-viewer uses additional runtime keys
 (e.g. FTP_*) that upstream strict validation would reject.
 
 Approach:
-- Create temporary slimmed env files for upstream validation/sync.
+- Create temporary slimmed `.env` and `.env.deploy` for upstream strict validation/sync.
+- Do NOT read any `.secrets` files in this wrapper.
 - After upstream finishes, override RUNTIME_ENV_DOTENV with the FULL `.env`
-  (so FTP_* and other app keys are present for CI deploys).
+    (so FTP_* and other runtime keys are present for CI deploys).
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ import tempfile
 from pathlib import Path
 
 
-_UPSTREAM_RUNTIME_KEYS = {"BASIC_AUTH_USER", "BASIC_AUTH_HASH", "APP_SECRET"}
+# Upstream PR #18 splits secrets into `.env.secrets`.
+# Keep the runtime `.env` we present to upstream strict validation minimal.
+_UPSTREAM_RUNTIME_KEYS = {"BASIC_AUTH_USER"}
 
 # Minimal legacy mapping for deploy-time keys (extend if you have older key names).
 _LEGACY_MAP = {
@@ -88,17 +91,44 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
 
     argv_list = list(argv if argv is not None else sys.argv[1:])
 
+    # Ensure we import upstream's env_schema (not this repo's) so we can filter
+    # `.env.deploy` keys to what upstream understands.
+    try:
+        import importlib.util
+
+        sys.modules.pop("env_schema", None)
+        env_schema_path = upstream_deploy_dir / "env_schema.py"
+        spec = importlib.util.spec_from_file_location("env_schema", env_schema_path)
+        if not (spec and spec.loader):
+            raise RuntimeError("Could not load upstream env_schema")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["env_schema"] = module
+        spec.loader.exec_module(module)
+        from env_schema import DEPLOY_SCHEMA, RUNTIME_SCHEMA  # type: ignore
+
+        allowed_deploy_keys = {spec.key.value for spec in DEPLOY_SCHEMA}
+        allowed_runtime_keys = {spec.key.value for spec in RUNTIME_SCHEMA}
+    except Exception:
+        allowed_deploy_keys = set()
+        allowed_runtime_keys = set(_UPSTREAM_RUNTIME_KEYS)
+
     runtime_path = repo_root / ".env"
     deploy_path = repo_root / ".env.deploy"
 
     runtime_kv = _parse_dotenv_file(runtime_path)
     deploy_kv = _parse_dotenv_file(deploy_path)
 
-    slim_runtime_kv = {k: v for k, v in runtime_kv.items() if k in _UPSTREAM_RUNTIME_KEYS}
+    runtime_allow = allowed_runtime_keys or set(_UPSTREAM_RUNTIME_KEYS)
+    slim_runtime_kv = {k: v for k, v in runtime_kv.items() if k in runtime_allow}
 
     translated_deploy_kv: dict[str, str] = {}
     for k, v in deploy_kv.items():
         new_key = _LEGACY_MAP.get(k, k)
+        # Keep secrets out of `.env.deploy` (they belong in `.env.deploy.secrets`).
+        if new_key == "GHCR_TOKEN":
+            continue
+        if allowed_deploy_keys and new_key not in allowed_deploy_keys:
+            continue
         if new_key not in translated_deploy_kv:
             translated_deploy_kv[new_key] = v
 
@@ -148,6 +178,8 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     upstream_script.main()
 
     # Override runtime secret with FULL .env so camera-storage-viewer keys (FTP_*) are included.
+    # Do NOT override runtime secrets here; upstream handles `.env.secrets` and
+    # this wrapper intentionally does not read any `.secrets` file.
     if runtime_path.exists() and not _is_dry_run(argv_list):
         runtime_text = runtime_path.read_text(encoding="utf-8")
         try:

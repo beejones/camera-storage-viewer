@@ -212,9 +212,12 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     if runtime_env_path.exists() and not _argv_has_flag(argv_list, "--upload-env-file"):
         argv_list.extend(["--upload-env-file", str(full_env_path)])
 
-    # Ensure FTP_* keys make it into Key Vault/runtime. BASIC_AUTH_* stays for Caddy.
-    if not _argv_has_flag(argv_list, "--upload-env-prefixes"):
-        argv_list.extend(["--upload-env-prefixes", "BASIC_AUTH_,FTP_"])
+    # With upstream's secrets-split model (.env + .env.secrets), it is safe and
+    # expected for `.env` to contain runtime (non-secret) config for the app.
+    # Upload the full runtime env file content so camera-storage-viewer keys
+    # (FTP_*, OUT_DIR, etc) are available at runtime.
+    if not _argv_has_flag(argv_list, "--upload-env-raw"):
+        argv_list.append("--upload-env-raw")
 
     sys.path.insert(0, str(upstream_deploy_dir))
     import azure_deploy_container as upstream_engine  # type: ignore
