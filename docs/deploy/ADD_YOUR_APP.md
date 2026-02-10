@@ -30,3 +30,36 @@ Common hook use-cases:
 - Mutating the `DeployPlan` in `build_deploy_plan` (e.g. images, sidecars, ports).
 
 For deployment instructions, see [docs/deploy/AZURE_CONTAINER.md](AZURE_CONTAINER.md).
+
+## Deploy engine integration (protected-azure-container)
+
+This repo vendors the upstream deploy engine **protected-azure-container** as a pinned git submodule, and keeps this repo’s deploy entrypoints as thin wrappers.
+
+- Upstream engine: `scripts/deploy/_upstream/`
+- Wrapper scripts: `scripts/deploy/*.py` (import and call the upstream engine)
+- Repo-specific behavior: `scripts/deploy/deploy_customizations.py` (loaded via the hook loader)
+
+### First clone
+
+After cloning, initialize the submodule:
+
+```bash
+git submodule update --init --recursive
+```
+
+Or via the helper:
+
+```bash
+python scripts/sync_deploy_upstream.py --init
+```
+
+### Updating the pinned upstream version
+
+Update the submodule and commit the gitlink change:
+
+```bash
+python scripts/sync_deploy_upstream.py --update
+git add scripts/deploy/_upstream
+```
+
+CI/deploy workflows must use `actions/checkout@v4` with `submodules: recursive` so the wrappers can import the engine.

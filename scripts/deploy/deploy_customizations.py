@@ -1,59 +1,74 @@
-"""camera-storage-viewer deployment customizations via upstream deploy hooks.
+"""Repo-specific deployment hooks for the protected-azure-container engine.
 
-This module is auto-loaded by `scripts/deploy/deploy_hooks.py` when present.
-Keep viewer-specific behavior here so upstream syncs stay low-conflict.
+The upstream engine loads hooks in this precedence order:
+1) --hooks-module <path>
+2) DEPLOY_HOOKS_MODULE=<path>
+3) scripts/deploy/deploy_customizations.py (this file)
+
+See upstream hook reference:
+- https://github.com/beejones/protected-azure-container/blob/main/docs/deploy/HOOKS.md
+
+camera-storage-viewer uses additional runtime keys (FTP_* etc). Upstream validates
+repo-root `.env` against a strict schema, so we treat `.env` as the source of
+truth and temporarily slim it for validation while preserving the full content
+for upload/deploy.
 """
 
 from __future__ import annotations
 
-import argparse
-import os
-import tempfile
-import time
-from dataclasses import dataclass
+import atexit
+import sys
 from pathlib import Path
-
-from scripts.deploy.deploy_hooks import DeployContext, DeployPlan
-from scripts.deploy.env_schema import VarsEnum
-from scripts.deploy.azure_utils import run_az_command
-from scripts.deploy import docker_compose_helpers as compose_helpers
-from scripts.deploy import csv_deploy_yaml_helpers as ftp_yaml_helpers
+from typing import Any, Protocol
 
 
-def _get_arg(args: argparse.Namespace, name: str, default: str | None = None) -> str | None:
-    if hasattr(args, name):
-        val = getattr(args, name)
-        if val is None:
-            return default
-        s = str(val).strip()
-        return s or default
-    return default
+_UPSTREAM_RUNTIME_KEYS = {"BASIC_AUTH_USER", "BASIC_AUTH_HASH", "APP_SECRET"}
 
 
-def _get_env_str(ctx: DeployContext, key: str) -> str | None:
-    val = ctx.env.get(key)
-    s = str(val or "").strip()
-    return s or None
+def _env_view(ctx: Any) -> dict[str, Any]:
+    env = getattr(ctx, "env", None)
+    if env is None:
+        raise TypeError("Expected deploy ctx with .env")
+    return env
 
 
-def _get_env_int(ctx: DeployContext, key: str, *, default: int | None = None) -> int | None:
-    raw = _get_env_str(ctx, key)
-    if raw is None:
-        return default
+def _args_view(ctx: Any) -> Any:
+    return getattr(ctx, "args", None)
+
+
+def _repo_root(ctx: Any) -> Path:
+    rr = getattr(ctx, "repo_root", None)
+    if rr is None:
+        raise TypeError("Expected deploy ctx with .repo_root")
+    return Path(rr)
+
+
+def _parse_dotenv_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
     try:
-        return int(raw)
-    except ValueError:
-        raise ValueError(f"{key} must be an int, got {raw!r}")
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        out[key.strip()] = value.strip()
+    return out
 
 
-def _get_env_float(ctx: DeployContext, key: str, *, default: float | None = None) -> float | None:
-    raw = _get_env_str(ctx, key)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        raise ValueError(f"{key} must be a float, got {raw!r}")
+def _write_slim_dotenv(path: Path, kv: dict[str, str], header_lines: list[str]) -> None:
+    lines = list(header_lines)
+    lines.append("")
+    for k in sorted(kv.keys()):
+        lines.append(f"{k}={kv[k]}")
+    lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def _aci_port_limit_validate(*, ftp_port: int, passive_min: int, passive_max: int) -> None:
@@ -66,291 +81,151 @@ def _aci_port_limit_validate(*, ftp_port: int, passive_min: int, passive_max: in
     if passive_max < passive_min:
         raise ValueError("FTP_PASSIVE_PORT_MAX must be >= FTP_PASSIVE_PORT_MIN")
 
-    # Azure Container Instances limitation: maximum 5 public IP ports per container group.
-    # FTP requires 1 control port + N passive ports.
     unique_ports = {ftp_port, *range(passive_min, passive_max + 1)}
     if len(unique_ports) > 5:
         raise ValueError(
             "ACI container groups support at most 5 public ports; "
             f"requested {len(unique_ports)} ports. "
             "Reduce FTP_PASSIVE_PORT_MAX so the passive range is <= 4 ports "
-            "(e.g. 50000-50003), or deploy somewhere that supports larger port ranges."
+            "(e.g. 50000-50003)."
         )
 
 
-def _delete_container_group(*, rg: str, name: str) -> None:
-    """Delete an ACI container group and wait for full deletion.
+class _HooksProto(Protocol):
+    def pre_validate_env(self, ctx: Any) -> None: ...
 
-    ACI is eventually consistent; waiting avoids `Conflict` on recreate.
-    """
+    def post_validate_env(self, ctx: Any) -> None: ...
 
-    run_az_command(
-        ["container", "delete", "--resource-group", rg, "--name", name, "--yes"],
-        capture_output=False,
-        ignore_errors=True,
-    )
+    def build_deploy_plan(self, ctx: Any, plan: Any) -> None: ...
 
-    max_wait = 180
-    poll_interval = 5
-    waited = 0
-    while waited < max_wait:
-        result = run_az_command(
-            [
-                "container",
-                "show",
-                "--resource-group",
-                rg,
-                "--name",
-                name,
-                "--query",
-                "provisioningState",
-                "-o",
-                "tsv",
-            ],
-            capture_output=True,
-            ignore_errors=True,
-            verbose=False,
-        )
-        if result is None:
-            return
-        time.sleep(poll_interval)
-        waited += poll_interval
+    def post_deploy(self, ctx: Any, plan: Any, result: Any) -> None: ...
 
 
-@dataclass
-class _ViewerHooks:
-    """Viewer-specific hook implementation.
+class CameraStorageViewerHooks:
+    def pre_validate_env(self, ctx: Any) -> None:
+        env = _env_view(ctx)
+        args = _args_view(ctx)
+        repo_root = _repo_root(ctx)
 
-    All hooks are optional; upstream safely no-ops missing methods.
-    """
+        # Defaults for this repo.
+        env.setdefault("OUT_DIR", "/data")
+        env.setdefault("WEB_PORT", "8081")
 
-    def pre_validate_env(self, ctx: DeployContext) -> None:
-        # Keep this conservative: only set viewer defaults when missing.
-        ctx.env.setdefault(VarsEnum.OUT_DIR.value, "/data")
-        ctx.env.setdefault(VarsEnum.WEB_PORT.value, "8081")
+        # Ensure additional runtime keys (FTP_*) are available in env even if
+        # upstream's strict validation slims the .env file.
+        runtime_path = repo_root / ".env"
+        full_path = repo_root / ".env.full"
 
-        # The upstream deploy script uploads a filtered subset of the runtime .env to Key Vault.
-        # camera-storage-viewer needs FTP_* keys at runtime for the FTP container group.
-        # If the user didn't override the default, extend it.
-        if hasattr(ctx.args, "upload_env_prefixes"):
-            current = str(getattr(ctx.args, "upload_env_prefixes") or "").strip()
-            if current == "BASIC_AUTH_":
-                setattr(ctx.args, "upload_env_prefixes", "BASIC_AUTH_,FTP_")
+        deploy_env_path = repo_root / ".env.deploy"
+        deploy_full_path = repo_root / ".env.deploy.full"
 
-    def post_validate_env(self, ctx: DeployContext) -> None:
-        service = _get_arg(ctx.args, "service")
+        if runtime_path.exists():
+            original_text = runtime_path.read_text(encoding="utf-8")
+            full_kv = _parse_dotenv_file(runtime_path)
 
-        # Only enforce FTP port-range limits when FTP is in play.
-        # (This is mainly to prevent confusing ACI failures when users widen the passive range.)
-        if service not in {"ftp", "full", None, ""}:
-            return
+            # Make all keys available via ctx.env.
+            for k, v in full_kv.items():
+                if k in _UPSTREAM_RUNTIME_KEYS:
+                    env[k] = v
+                else:
+                    env.setdefault(k, v)
 
-        ftp_port = _get_env_int(ctx, VarsEnum.FTP_PORT.value, default=21) or 21
-        passive_min = _get_env_int(ctx, VarsEnum.FTP_PASSIVE_PORT_MIN.value, default=50000) or 50000
-        passive_max = _get_env_int(ctx, VarsEnum.FTP_PASSIVE_PORT_MAX.value, default=50003) or 50003
+            full_path.write_text(original_text, encoding="utf-8")
 
-        _aci_port_limit_validate(ftp_port=ftp_port, passive_min=passive_min, passive_max=passive_max)
-
-    def build_deploy_plan(self, ctx: DeployContext, plan: DeployPlan) -> None:
-        # If running camera-storage-viewer deploy scripts, we can infer mode from args.
-        service = _get_arg(ctx.args, "service")
-        if service:
-            plan.deploy_mode = service
-
-        # Expose viewer-ish metadata to downstream deploy logic.
-        if hasattr(plan, "service_mode"):
-            plan.service_mode = "app" if (service in {None, "", "web", "web-caddy", "full"}) else service
-
-        # Prefer an explicit caddy image if set in env (CI / .env.deploy).
-        caddy_image = _get_env_str(ctx, VarsEnum.CADDY_IMAGE.value)
-        if caddy_image:
-            plan.caddy_image = caddy_image
-
-        # When deploying the web container, the *internal* port is WEB_PORT.
-        # (Public ports are handled by the container group and/or caddy sidecar.)
-        if service in {"web", "web-caddy", "full"}:
-            web_port = _get_env_int(ctx, VarsEnum.WEB_PORT.value, default=None)
-            if web_port:
-                plan.app_port = web_port
-
-        # Provide ftp passive range as a stable string for YAML generators.
-        ftp_min = _get_env_int(ctx, VarsEnum.FTP_PASSIVE_PORT_MIN.value, default=None)
-        ftp_max = _get_env_int(ctx, VarsEnum.FTP_PASSIVE_PORT_MAX.value, default=None)
-        if ftp_min is not None and ftp_max is not None and hasattr(plan, "ftp_passive_range"):
-            plan.ftp_passive_range = f"{ftp_min}-{ftp_max}"
-
-        # Camera-friendly default for PASV behind ACI NAT:
-        # if FTP_PUBLIC_HOST isn't set, set it to the public FTP container group's FQDN.
-        # Users can override by setting FTP_PUBLIC_HOST explicitly in runtime .env.
-        if not _get_env_str(ctx, VarsEnum.FTP_PUBLIC_HOST.value):
-            dns_label = (plan.dns_label or "").strip()
-            location = (plan.location or "").strip()
-            if dns_label and location:
-                ftp_dns_label = f"{dns_label}-ftp"
-                ctx.env[VarsEnum.FTP_PUBLIC_HOST.value] = f"{ftp_dns_label}.{location}.azurecontainer.io"
-
-    def post_deploy(self, ctx: DeployContext, plan: DeployPlan, _res: object) -> None:
-        """Deploy the FTP container group when docker-compose.yml defines it.
-
-        We intentionally keep this viewer-specific behavior out of the upstream-controlled
-        `azure_deploy_container.py` script.
-        """
-
-        repo_root: Path = ctx.repo_root
-        compose_config = compose_helpers.load_docker_compose_config(repo_root)
-        role_map = compose_helpers.detect_services_by_role(compose_config)
-        ftp_services = role_map.get("ftp", [])
-        if not ftp_services:
-            return
-        if len(ftp_services) > 1:
-            raise SystemExit(f"Multiple ftp services found via x-deploy-role: {ftp_services}")
-
-        ftp_service_name = ftp_services[0]
-        services = compose_config.get("services", {})
-        ftp_service = services.get(ftp_service_name)
-        if not ftp_service:
-            raise SystemExit(f"x-deploy-role ftp points to missing service: {ftp_service_name}")
-
-        rg = (_get_arg(ctx.args, "resource_group") or _get_env_str(ctx, "AZURE_RESOURCE_GROUP") or "").strip()
-        if not rg:
-            raise SystemExit("Missing resource group; cannot deploy ftp container group")
-
-        name = (plan.name or "").strip()
-        if not name:
-            raise SystemExit("Missing container name in deploy plan")
-
-        storage_name = (_get_arg(ctx.args, "storage_name") or f"{rg}stg").replace("-", "")
-        storage_name = "".join([c for c in storage_name.lower() if c.isalnum()])[:24]
-
-        identity_name = _get_arg(ctx.args, "identity_name") or f"{rg}-identity"
-        kv_name = _get_arg(ctx.args, "keyvault_name")
-        if not kv_name:
-            base = "".join([c for c in rg.lower() if c.isalnum()])
-            kv_name = f"{base}kv"[:24]
-
-        share_workspace = _get_arg(ctx.args, "share_workspace") or f"{name}-workspace"
-        data_share_name = (_get_arg(ctx.args, "data_share_name") or share_workspace).strip()
-
-        # Ports from compose env (preferred) -> runtime env fallback.
-        def _compose_int(key: str) -> int | None:
-            raw = compose_helpers.get_env_var(ftp_service, key)
-            if raw is None:
-                return None
-            s = str(raw).strip()
-            return int(s) if s else None
-
-        ftp_port = _compose_int("FTP_PORT") or _get_env_int(ctx, VarsEnum.FTP_PORT.value, default=21) or 21
-        passive_min = (
-            _compose_int("FTP_PASSIVE_PORT_MIN")
-            or _get_env_int(ctx, VarsEnum.FTP_PASSIVE_PORT_MIN.value, default=50000)
-            or 50000
-        )
-        passive_max = (
-            _compose_int("FTP_PASSIVE_PORT_MAX")
-            or _get_env_int(ctx, VarsEnum.FTP_PASSIVE_PORT_MAX.value, default=50003)
-            or 50003
-        )
-        _aci_port_limit_validate(ftp_port=ftp_port, passive_min=passive_min, passive_max=passive_max)
-
-        # Registry creds: required for private images, optional for public ones.
-        registry_username = _get_env_str(ctx, "GHCR_USERNAME")
-        registry_password = _get_env_str(ctx, "GHCR_TOKEN")
-        wants_registry_creds = bool(str(ctx.env.get("GHCR_PRIVATE") or "").strip().lower() in {"1", "true", "yes"})
-
-        registry_server = None
-        if str(plan.app_image or "").startswith("ghcr.io/") and registry_username and registry_password:
-            registry_server = "ghcr.io"
-
-        if wants_registry_creds and not (registry_username and registry_password):
-            raise SystemExit("GHCR_PRIVATE=true but GHCR_USERNAME/GHCR_TOKEN are missing (needed to deploy ftp group)")
-
-        # Identity details
-        identity_id = str(
-            run_az_command(
-                ["identity", "show", "-g", rg, "-n", identity_name, "--query", "id", "-o", "tsv"],
-                capture_output=True,
-            )
-        ).strip()
-        identity_client_id = str(
-            run_az_command(
-                ["identity", "show", "-g", rg, "-n", identity_name, "--query", "clientId", "-o", "tsv"],
-                capture_output=True,
-            )
-        ).strip()
-        identity_tenant_id = str(
-            run_az_command(
-                ["identity", "show", "-g", rg, "-n", identity_name, "--query", "tenantId", "-o", "tsv"],
-                capture_output=True,
-            )
-        ).strip()
-
-        # Storage key
-        storage_key = str(
-            run_az_command(
-                [
-                    "storage",
-                    "account",
-                    "keys",
-                    "list",
-                    "--resource-group",
-                    rg,
-                    "--account-name",
-                    storage_name,
-                    "--query",
-                    "[0].value",
-                    "-o",
-                    "tsv",
+            slim_kv = {k: v for k, v in full_kv.items() if k in _UPSTREAM_RUNTIME_KEYS}
+            _write_slim_dotenv(
+                runtime_path,
+                slim_kv,
+                header_lines=[
+                    "# TEMPORARY during deploy: slimmed for upstream strict validation.",
+                    "# Source of truth is still this repo's .env; it will be restored on exit.",
                 ],
-                capture_output=True,
             )
-        ).strip()
 
-        ftp_group_name = f"{name}-ftp"
-        ftp_dns_label = f"{plan.dns_label}-ftp"
+            def _restore_env() -> None:
+                try:
+                    if full_path.exists():
+                        runtime_path.write_text(full_path.read_text(encoding="utf-8"), encoding="utf-8")
+                        full_path.unlink(missing_ok=True)
+                except Exception:
+                    return
 
-        ftp_cpu = _get_env_float(ctx, VarsEnum.FTP_CPU_CORES.value, default=None)
-        ftp_memory = _get_env_float(ctx, VarsEnum.FTP_MEMORY_GB.value, default=None)
+            atexit.register(_restore_env)
 
-        if ftp_cpu is None:
-            ftp_cpu = plan.app_cpu
-        if ftp_memory is None:
-            ftp_memory = plan.app_memory
+        # Deploy-time file: keep as source of truth, but preserve a backup.
+        if deploy_env_path.exists() and not deploy_full_path.exists():
+            try:
+                deploy_full_path.write_text(deploy_env_path.read_text(encoding="utf-8"), encoding="utf-8")
 
-        print(
-            f"ℹ️  [deploy] docker-compose defines ftp='{ftp_service_name}'. Ensuring ACI container group '{ftp_group_name}' ({ftp_port}, {passive_min}-{passive_max})"
-        )
+                def _restore_deploy_env() -> None:
+                    try:
+                        if deploy_full_path.exists():
+                            deploy_env_path.write_text(
+                                deploy_full_path.read_text(encoding="utf-8"),
+                                encoding="utf-8",
+                            )
+                            deploy_full_path.unlink(missing_ok=True)
+                    except Exception:
+                        return
 
-        _delete_container_group(rg=rg, name=ftp_group_name)
+                atexit.register(_restore_deploy_env)
+            except Exception:
+                pass
 
-        ftp_yaml = ftp_yaml_helpers.generate_deploy_yaml(
-            name=ftp_group_name,
-            location=plan.location,
-            image=plan.app_image,
-            registry_server=registry_server,
-            registry_username=registry_username,
-            registry_password=registry_password,
-            identity_id=identity_id,
-            identity_client_id=identity_client_id,
-            identity_tenant_id=identity_tenant_id,
-            storage_name=storage_name,
-            storage_key=storage_key,
-            kv_name=kv_name,
-            dns_label=ftp_dns_label,
-            cpu_cores=ftp_cpu,
-            memory_gb=ftp_memory,
-            data_share_name=data_share_name,
-            ftp_port=ftp_port,
-            ftp_passive_port_min=passive_min,
-            ftp_passive_port_max=passive_max,
-        )
+        # If wrapper didn't already extend upload prefixes, do it here.
+        if args is not None and hasattr(args, "upload_env_prefixes"):
+            current = str(getattr(args, "upload_env_prefixes") or "").strip()
+            if current == "BASIC_AUTH_":
+                setattr(args, "upload_env_prefixes", "BASIC_AUTH_,FTP_")
 
-        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-            f.write(ftp_yaml)
-            ftp_yaml_path = f.name
+    def post_validate_env(self, ctx: Any) -> None:
+        env = _env_view(ctx)
 
-        print(f"📝 [deploy] wrote: {ftp_yaml_path}")
-        run_az_command(["container", "create", "--resource-group", rg, "--file", ftp_yaml_path], capture_output=False)
+        def _int(name: str, default: int) -> int:
+            raw = str(env.get(name, "") or "").strip()
+            if not raw:
+                return default
+            return int(raw)
+
+        ftp_port = _int("FTP_PORT", 21)
+        passive_min = _int("FTP_PASSIVE_PORT_MIN", 50000)
+        passive_max = _int("FTP_PASSIVE_PORT_MAX", 50003)
+        _aci_port_limit_validate(ftp_port=ftp_port, passive_min=passive_min, passive_max=passive_max)
+
+    def build_deploy_plan(self, _ctx: Any, _plan: Any) -> None:
+        ctx = _ctx
+        plan = _plan
+        env = _env_view(ctx)
+        args = _args_view(ctx)
+
+        # Preserve existing engine defaults, but allow the legacy --service style
+        # (used by camera-storage-viewer) to override deploy_mode when present.
+        service = str(getattr(args, "service", "") or "").strip().lower() if args is not None else ""
+        if service:
+            setattr(plan, "deploy_mode", service)
+
+        caddy_image = str(env.get("CADDY_IMAGE", "") or "").strip()
+        if caddy_image and hasattr(plan, "caddy_image"):
+            setattr(plan, "caddy_image", caddy_image)
+
+        web_port_raw = str(env.get("WEB_PORT", "") or "").strip()
+        if web_port_raw and hasattr(plan, "app_port"):
+            setattr(plan, "app_port", int(web_port_raw))
+
+        pmin = str(env.get("FTP_PASSIVE_PORT_MIN", "") or "").strip()
+        pmax = str(env.get("FTP_PASSIVE_PORT_MAX", "") or "").strip()
+        if pmin and pmax and hasattr(plan, "ftp_passive_range"):
+            setattr(plan, "ftp_passive_range", f"{int(pmin)}-{int(pmax)}")
+
+        return None
+
+    def post_deploy(self, _ctx: Any, _plan: Any, _result: Any) -> None:
+        # No-op: deployments are handled by the primary deploy scripts.
+        return None
 
 
-def get_hooks() -> _ViewerHooks:
-    return _ViewerHooks()
+_HOOKS: _HooksProto = CameraStorageViewerHooks()
+
+
+def get_hooks() -> _HooksProto:
+    return _HOOKS

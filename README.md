@@ -2,6 +2,16 @@
 
 This repo is evolving into an Azure-hosted camera recorder + viewer.
 
+
+## Deploy engine integration
+
+This repo integrates the upstream deploy engine **protected-azure-container** as a pinned git submodule at `scripts/deploy/_upstream`.
+
+- Use the wrapper scripts in `scripts/deploy/` as the stable entrypoints.
+- Keep repo-specific behavior in `scripts/deploy/deploy_customizations.py` (hooks).
+
+After cloning, run `git submodule update --init --recursive` (or `python scripts/sync_deploy_upstream.py --init`).
+
 ## Upstream (Project Origin)
 
 This repository started as a clone/fork of:
