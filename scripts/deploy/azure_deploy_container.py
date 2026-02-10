@@ -737,6 +737,14 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             args.caddy_data_share_name or f"{name}-caddy-data",
             args.caddy_config_share_name or f"{name}-caddy-config",
         ]
+
+        quota_raw = (os.getenv(VarsEnum.AZURE_FILE_SHARE_QUOTA_GB.value) or "").strip()
+        try:
+            file_share_quota_gb = int(quota_raw) if quota_raw else 5
+        except ValueError:
+            raise SystemExit(
+                f"Invalid {VarsEnum.AZURE_FILE_SHARE_QUOTA_GB.value}={quota_raw!r}. Must be an integer number of GB."
+            )
         ensure_infra(
             resource_group=rg,
             location=location,
@@ -745,6 +753,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             keyvault_name=kv_name,
             storage_name=storage_name,
             shares=shares_to_ensure,
+            file_share_quota_gb=file_share_quota_gb,
         )
     
         subscription_id = (os.getenv(VarsEnum.AZURE_SUBSCRIPTION_ID.value) or "").strip()

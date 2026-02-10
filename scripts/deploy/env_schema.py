@@ -45,6 +45,7 @@ class VarsEnum(str, Enum):
     AZURE_LOCATION = "AZURE_LOCATION"
     AZURE_CONTAINER_NAME = "AZURE_CONTAINER_NAME"
     AZURE_DNS_LABEL = "AZURE_DNS_LABEL"
+    AZURE_FILE_SHARE_QUOTA_GB = "AZURE_FILE_SHARE_QUOTA_GB"
 
     # Domain / TLS
     PUBLIC_DOMAIN = "PUBLIC_DOMAIN"
@@ -353,6 +354,12 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         key=VarsEnum.AZURE_DNS_LABEL,
         mandatory=False,
         default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.AZURE_FILE_SHARE_QUOTA_GB,
+        mandatory=False,
+        default="5",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(

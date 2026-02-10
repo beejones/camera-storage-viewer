@@ -649,6 +649,14 @@ def main() -> None:
     # Ensure Azure resources exist so a single azure_deploy_container invocation can bootstrap infra.
     # FTP-only: single durable data share mounted at /data.
     shares_to_ensure = [args.data_share_name or f"{name}-data"]
+
+    quota_raw = (os.getenv(VarsEnum.AZURE_FILE_SHARE_QUOTA_GB.value) or "").strip()
+    try:
+        file_share_quota_gb = int(quota_raw) if quota_raw else 5
+    except ValueError:
+        raise SystemExit(
+            f"Invalid {VarsEnum.AZURE_FILE_SHARE_QUOTA_GB.value}={quota_raw!r}. Must be an integer number of GB."
+        )
     ensure_infra(
         resource_group=rg,
         location=location,
@@ -657,6 +665,7 @@ def main() -> None:
         keyvault_name=kv_name,
         storage_name=storage_name,
         shares=shares_to_ensure,
+        file_share_quota_gb=file_share_quota_gb,
     )
 
     subscription_id = (os.getenv(VarsEnum.AZURE_SUBSCRIPTION_ID.value) or "").strip()
