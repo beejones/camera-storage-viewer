@@ -106,6 +106,39 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         spec.loader.exec_module(module)
         from env_schema import DEPLOY_SCHEMA, RUNTIME_SCHEMA  # type: ignore
 
+        # Downstream extension: allow camera-storage-viewer FTP credential keys
+        # to live in `.env.secrets` without failing upstream strict validation.
+        try:
+            import env_schema as _es  # type: ignore
+
+            class _RawKey:
+                def __init__(self, value: str) -> None:
+                    self.value = value
+
+            extra_secret_keys = [
+                "FTP_USERS_JSON",
+                "FTP_CAMERA_ID",
+                "FTP_USERNAME",
+                "FTP_PASSWORD",
+            ]
+            existing = {spec.key.value for spec in getattr(_es, "SECRETS_SCHEMA", ())}
+            extra_specs = []
+            for k in extra_secret_keys:
+                if k in existing:
+                    continue
+                extra_specs.append(
+                    _es.EnvKeySpec(
+                        key=_RawKey(k),
+                        mandatory=False,
+                        default=None,
+                        targets=frozenset({_es.EnvTarget.DOTENV_SECRETS}),
+                    )
+                )
+            if extra_specs:
+                _es.SECRETS_SCHEMA = tuple(_es.SECRETS_SCHEMA) + tuple(extra_specs)
+        except Exception:
+            pass
+
         allowed_deploy_keys = {spec.key.value for spec in DEPLOY_SCHEMA}
         allowed_runtime_keys = {spec.key.value for spec in RUNTIME_SCHEMA}
     except Exception:

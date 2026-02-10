@@ -190,6 +190,41 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         sys.modules["env_schema"] = module
         spec.loader.exec_module(module)
 
+        # Downstream extension: camera-storage-viewer keeps additional runtime
+        # secrets (FTP_* credentials) in `.env.secrets`. Upstream strict validation
+        # rejects unknown keys, so we extend SECRETS_SCHEMA at runtime.
+        try:
+            env_schema = module
+
+            class _RawKey:
+                def __init__(self, value: str) -> None:
+                    self.value = value
+
+            extra_secret_keys = [
+                "FTP_USERS_JSON",
+                "FTP_CAMERA_ID",
+                "FTP_USERNAME",
+                "FTP_PASSWORD",
+            ]
+            existing = {spec.key.value for spec in getattr(env_schema, "SECRETS_SCHEMA", ())}
+            extra_specs = []
+            for k in extra_secret_keys:
+                if k in existing:
+                    continue
+                extra_specs.append(
+                    env_schema.EnvKeySpec(
+                        key=_RawKey(k),
+                        mandatory=False,
+                        default=None,
+                        targets=frozenset({env_schema.EnvTarget.DOTENV_SECRETS}),
+                    )
+                )
+            if extra_specs:
+                env_schema.SECRETS_SCHEMA = tuple(env_schema.SECRETS_SCHEMA) + tuple(extra_specs)
+        except Exception:
+            # Best-effort; if upstream schema shape changes, we fall back to hooks.
+            pass
+
     argv_list = list(argv if argv is not None else sys.argv[1:])
 
     # This repo's Dockerfile lives at docker/Dockerfile. The upstream engine defaults
