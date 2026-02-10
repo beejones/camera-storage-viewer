@@ -1,31 +1,37 @@
 # Azure Container Deployment (ACI)
 
-Deploy **protected-azure-container** to **Azure Container Instances (ACI)** with:
+Deploy **camera-storage-viewer** to **Azure Container Instances (ACI)** as a lightweight **FTP endpoint** for cameras.
 
-- **code-server** (VS Code in browser) as the main interface
-- **Caddy** sidecar for **TLS** with automatic Let's Encrypt certificates
-- **Basic Auth** protection
-- **Azure Key Vault** + **Managed Identity** for secrets
-- **Azure Files** persistence for workspace and config
+Current deployment model:
+
+- Single container running an FTP server (`pyftpdlib`).
+- Persistent storage via **Azure Files** mounted at `/data`.
+- Runtime config stored as a single **Key Vault secret** named `env` (full `.env` content), fetched at startup via **Managed Identity**.
 
 ## Architecture
 
-ACI container group with 2 containers (configuration derived from `docker-compose.yml`):
+In Azure Container Instances (ACI), the most reliable model for this project is **two container groups**:
+
+1) **FTP group** (public ports are consumed by FTP control + passive range)
 
 | Container | Purpose | Ports |
 |-----------|---------|-------|
-| `protected-azure-container` | code-server | Matches `docker-compose.yml` (default 8080) |
-| `tls-proxy` (Caddy) | TLS + Basic Auth | 80, 443 (public) |
+| `camera-storage-viewer` | FTP server | 21 + passive range |
 
-```
-Internet → Caddy (:443) → [TLS + Basic Auth] → code-server (:app_port)
-```
+2) **Web group** (viewer app + optional Caddy sidecar)
+
+| Container | Purpose | Ports |
+|-----------|---------|-------|
+| `camera-storage-viewer` | Viewer web API / UI | 8081 (internal), optionally 8081 public if deployed without Caddy |
+| `caddy` (optional) | HTTPS termination / reverse proxy | 80, 443 |
+
+Reason: ACI container groups can expose at most **5 public ports**. FTP typically consumes all 5 (21 + 4 passive), so HTTP/HTTPS must be a separate group.
 
 ## Prerequisites
 
 - Azure CLI: `az login`
 - Docker image pushed to GHCR/ACR
-- `.env` file with Basic Auth credentials (runtime)
+- `.env` file with FTP runtime config (runtime)
 - `.env.deploy` file with Azure + deploy configuration (deploy-time)
 
 Deployment reads `.env` first, then `.env.deploy` on top (deploy-time overrides).
@@ -35,8 +41,8 @@ Deployment reads `.env` first, then `.env.deploy` on top (deploy-time overrides)
 The deploy script auto-creates resources if they don't exist:
 
 ```bash
-python scripts/deploy/azure_deploy_container.py \
-  --resource-group protected-azure-container-rg \
+python scripts/deploy/csv_deploy_container.py \
+  --resource-group camera-storage-viewer-rg \
   --location westeurope
 ```
 
@@ -46,57 +52,34 @@ Creates:
 - Storage account + file shares
 - Key Vault (RBAC enabled)
 
-## Step 2 — Configure Authentication
-
-### Generate Basic Auth Hash
-
-```bash
-docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your-password'
-```
-
-Add to `.env`:
-
-```bash
-BASIC_AUTH_USER=admin
-BASIC_AUTH_HASH=$2a$14$...your-hash...
-```
-
-### Upload to Key Vault
+## Step 2 — Upload runtime `.env` to Key Vault
 
 ```bash
 python scripts/deploy/azure_upload_env.py \
-  --vault protected-azure-container-rg-kv \
+  --vault camera-storage-viewer-rg-kv \
   --env-file .env
 ```
+
+By default, deploy also uploads `.env` to Key Vault (controlled by `--upload-env` / `--no-upload-env`).
 
 ## Step 3 — Deploy to ACI
 
 ```bash
-python scripts/deploy/azure_deploy_container.py \
-  --resource-group protected-azure-container-rg \
-  --image ghcr.io/your-user/protected-azure-container:latest \
-  --public-domain your-domain.com \
-  --acme-email you@your-domain.com \
+python scripts/deploy/csv_deploy_container.py \
+  --resource-group camera-storage-viewer-rg \
+  --image ghcr.io/<your-gh-username>/camera-storage-viewer:latest \
   --env-file .env.deploy
 ```
 
-## Step 4 — DNS Setup
-
-Point your domain CNAME to the ACI FQDN:
-
-```bash
-az container show \
-  --name protected-azure-container \
-  --resource-group protected-azure-container-rg \
-  --query ipAddress.fqdn -o tsv
-```
-
-Result: `<dns-label>.<location>.azurecontainer.io`
+The script prints the ACI FQDN and the `ftp://` endpoint.
 
 ## Access
 
-- **VS Code**: `https://your-domain.com/`
-- **Health check**: `https://your-domain.com/healthz`
+- **FTP**: `ftp://<dns-label>.<location>.azurecontainer.io:21`
+
+Note: FTP passive mode requires opening the configured passive port range in ACI.
+
+ACI limitation: container groups support at most **5 public ports total**, so keep the passive range small (e.g. `50000-50003`).
 
 ## Troubleshooting
 
@@ -112,22 +95,17 @@ If you're debugging a deployment where Key Vault logs are missing, check the app
 ### View Logs
 
 ```bash
-# code-server container
-az container logs --resource-group protected-azure-container-rg \
-  --name protected-azure-container --container-name protected-azure-container
-
-# Caddy container
-az container logs --resource-group protected-azure-container-rg \
-  --name protected-azure-container --container-name tls-proxy
+az container logs --resource-group camera-storage-viewer-rg \
+  --name camera-storage-viewer --container-name camera-storage-viewer
 ```
 
 ### Common Issues
 
 | Issue | Solution |
 |-------|----------|
-| 502 Bad Gateway | Check code-server is running in app container |
-| TLS cert error | Verify domain DNS points to ACI IP |
-| Auth not working | Verify BASIC_AUTH_HASH is valid bcrypt |
+| Camera can log in but uploads fail | Check passive ports are open and `FTP_PUBLIC_HOST` is set (if needed) |
+| Connection times out | Confirm ACI has a public IP and port 21 is exposed |
+| Files not persisted | Confirm Azure Files share is mounted at `/data` |
 
 ## GitHub Actions
 
@@ -139,16 +117,24 @@ Triggers on: **Workflow Dispatch** (Manual)
 1. **Environment**: Create an environment named `production` in GitHub Settings.
 2. **Secrets** (Environment or Repo):
    - `RUNTIME_ENV_DOTENV`: The **full content** of `.env` (excluding comments is fine).
-   - `BASIC_AUTH_HASH`: The bcrypt hash for Basic Auth.
 3. **Variables** (Environment or Repo):
+  - `AZURE_OIDC_APP_NAME` (Azure AD App Registration display name for OIDC)
    - `AZURE_CLIENT_ID` (OIDC App ID)
    - `AZURE_TENANT_ID`
    - `AZURE_SUBSCRIPTION_ID`
-   - `AZURE_RESOURCE_GROUP` (e.g. `protected-azure-container-rg`)
-   - `AZURE_CONTAINER_NAME` (e.g. `protected-azure-container`)
-   - `AZURE_PUBLIC_DOMAIN` (e.g. `your-domain.com`)
-   - `AZURE_ACME_EMAIL`
-   - `BASIC_AUTH_USER`
+   - `AZURE_RESOURCE_GROUP` (e.g. `camera-storage-viewer-rg`)
+   - `AZURE_CONTAINER_NAME` (e.g. `camera-storage-viewer`)
+
+The workflow builds/pushes `ghcr.io/<owner>/<repo>:latest` and then runs `scripts/deploy/csv_deploy_container.py`.
+
+### Deploy Customizations (Hooks)
+
+This repo supports a hooks-based customization system for viewer-specific deploy behavior.
+
+- Default hooks module: `scripts/deploy/deploy_customizations.py`
+- Override in CI by editing the deploy command to include:
+  - `--hooks-module <module-or-path>`
+  - `--hooks-soft-fail` (optional)
 
 ### Resetting GitHub Secrets
 

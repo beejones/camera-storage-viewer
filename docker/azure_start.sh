@@ -1,45 +1,47 @@
-#!/bin/bash
-# Azure startup script for protected container
-# Fetches secrets from Key Vault and starts the application
+#!/bin/sh
+# Azure startup script (lightweight)
+# Fetches runtime .env from Key Vault using Managed Identity + Key Vault REST.
 
-set -e
+set -eu
 
-echo "[azure_start] Starting protected container..."
+echo "[azure_start] Starting container..."
 
-# If AZURE_KEYVAULT_URI is set, fetch the .env from Key Vault
-if [ -n "$AZURE_KEYVAULT_URI" ]; then
-    echo "[azure_start] Fetching secrets from Key Vault: $AZURE_KEYVAULT_URI"
-    
-    # Login using Managed Identity
-    az login --identity --allow-no-subscriptions 2>/dev/null || {
-        echo "[azure_start] Warning: Could not login with Managed Identity, trying without auth"
-    }
-    
-    # Extract vault name from URI (https://<vault-name>.vault.azure.net/)
-    VAULT_NAME=$(echo "$AZURE_KEYVAULT_URI" | sed -E 's|https://([^.]+)\.vault\.azure\.net/?|\1|')
-    
-    # Fetch the 'env' secret and write to .env
-    if az keyvault secret show --vault-name "$VAULT_NAME" --name "env" --query "value" -o tsv > /home/coder/.env 2>/dev/null; then
-        echo "[azure_start] Successfully fetched .env from Key Vault"
-        chown coder:coder /home/coder/.env
-        export $(grep -v '^#' /home/coder/.env | xargs -d '\n')
-    else
-        echo "[azure_start] Warning: Could not fetch 'env' secret from Key Vault"
+ENV_OUT_PATH="${RUNTIME_ENV_PATH:-/app/.env}"
+ENV_SECRET_NAME="${AZURE_ENV_SECRET_NAME:-env}"
+
+if [ -n "${AZURE_KEYVAULT_URI:-}" ]; then
+    echo "[azure_start] Fetching '${ENV_SECRET_NAME}' from Key Vault: ${AZURE_KEYVAULT_URI}"
+
+    # Managed Identity token for Key Vault
+    TOKEN_URL="http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net"
+    TOKEN_JSON="$(curl -sS --fail -H 'Metadata: true' "${TOKEN_URL}")"
+    ACCESS_TOKEN="$(python -c 'import json,sys; print(json.loads(sys.stdin.read())["access_token"])' <<EOF
+${TOKEN_JSON}
+EOF
+)"
+
+    # Normalize vault URL (ensure no trailing slash)
+    VAULT_URL="${AZURE_KEYVAULT_URI%/}"
+    SECRET_URL="${VAULT_URL}/secrets/${ENV_SECRET_NAME}?api-version=7.4"
+
+    SECRET_JSON="$(curl -sS --fail -H "Authorization: Bearer ${ACCESS_TOKEN}" "${SECRET_URL}")"
+    SECRET_VALUE="$(python -c 'import json,sys; print(json.loads(sys.stdin.read()).get("value",""))' <<EOF
+${SECRET_JSON}
+EOF
+)"
+
+    if [ -z "${SECRET_VALUE}" ]; then
+        echo "[azure_start] ERROR: Key Vault secret '${ENV_SECRET_NAME}' is empty or missing 'value'" >&2
+        exit 1
     fi
+
+    mkdir -p "$(dirname "${ENV_OUT_PATH}")"
+    printf "%s" "${SECRET_VALUE}" > "${ENV_OUT_PATH}"
+    chmod 600 "${ENV_OUT_PATH}" || true
+    echo "[azure_start] Successfully wrote runtime env to ${ENV_OUT_PATH}"
 else
-    echo "[azure_start] No AZURE_KEYVAULT_URI set, using local environment"
-    
-    # If .env exists locally, source it
-    if [ -f /home/coder/.env ]; then
-        export $(grep -v '^#' /home/coder/.env | xargs -d '\n')
-    fi
+    echo "[azure_start] No AZURE_KEYVAULT_URI set; skipping Key Vault fetch"
 fi
 
-# Ensure workspace directory exists
-mkdir -p /home/coder/workspace
-chown -R coder:coder /home/coder/workspace
-
 echo "[azure_start] Starting application..."
-
-# Execute the command passed to the container
 exec "$@"

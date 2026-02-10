@@ -1,0 +1,456 @@
+:root {
+  --bg: #0b1020;
+  --panel: #111a33;
+  --panel2: #0f1730;
+  --text: #e6e9f2;
+  --muted: #98a2b3;
+  --border: rgba(255, 255, 255, 0.08);
+  --accent: #7c5cff;
+  --good: #27c26c;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: radial-gradient(1200px 600px at 40% -10%, rgba(124,92,255,0.25), transparent),
+              radial-gradient(900px 500px at 110% 10%, rgba(39,194,108,0.12), transparent),
+              var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
+  padding: 16px;
+  overflow: auto;
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  margin-bottom: 12px;
+}
+
+.sidebar__sectionTitle {
+  margin-top: 14px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.date { margin-top: 10px; }
+.date__label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.date__input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+  outline: none;
+}
+
+.cameraListStatus {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 10px;
+  min-height: 16px;
+}
+
+.cameraListStatus--error {
+  color: rgba(255, 170, 170, 0.95);
+}
+
+.cameraList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cameraItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.03);
+  cursor: pointer;
+}
+
+.cameraItem--active {
+  border-color: rgba(124,92,255,0.55);
+  background: rgba(124,92,255,0.12);
+}
+
+.cameraItem__left {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.cameraItem__name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cameraItem__meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.statusDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.25);
+}
+
+.statusDot--good { background: var(--good); }
+
+.main {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding: 16px;
+  gap: 14px;
+}
+
+.main__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255,255,255,0.03);
+}
+
+.cameraTitle { font-weight: 700; }
+.cameraMeta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+.btn {
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.05);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.stage {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(0,0,0,0.25);
+}
+
+.player {
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+  max-height: 60vh;
+  background: #000;
+}
+
+.emptyState {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.timeline {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(255,255,255,0.03);
+}
+
+.timeline__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.timeline__title { font-weight: 700; }
+.timeline__hint { font-size: 12px; color: var(--muted); }
+
+.timeline__right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  justify-content: flex-end;
+}
+
+.timelineScaleSelect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.timelineScaleSelect__input {
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+  padding: 4px 8px;
+}
+
+.timelineZoom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.timelineZoom__input {
+  width: 160px;
+}
+
+.timelineScroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 6px;
+}
+
+.timelineInner {
+  min-width: 100%;
+}
+
+.timelineScale {
+  position: relative;
+  height: 26px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.08);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.timelineTick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255,255,255,0.12);
+}
+
+.timelineTick--major {
+  background: rgba(255,255,255,0.22);
+}
+
+.timelineTickLabel {
+  position: absolute;
+  top: 4px;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.timelineTrack {
+  position: relative;
+  height: 18px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.18);
+  overflow: hidden;
+}
+
+.timelineTrack::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      to right,
+      rgba(255,255,255,0.00) 0,
+      rgba(255,255,255,0.00) calc((100% / 24) - 1px),
+      rgba(255,255,255,0.10) calc((100% / 24) - 1px),
+      rgba(255,255,255,0.10) calc(100% / 24)
+    );
+  opacity: 0.55;
+}
+
+.timelineSegment {
+  position: absolute;
+  top: 2px;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(48, 160, 255, 0.92);
+  box-shadow: 0 8px 18px rgba(0,0,0,0.25);
+  cursor: pointer;
+}
+
+.timelineSegment:hover {
+  background: rgba(48, 160, 255, 1);
+}
+
+.timelinePlayhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255,255,255,0.85);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.22);
+  pointer-events: none;
+}
+
+.timelineFilmstrip {
+  margin-top: 10px;
+  position: relative;
+  min-height: 96px;
+}
+
+.filmItem {
+  width: 130px;
+  position: absolute;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.24);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.filmItem--active {
+  border-color: rgba(48, 160, 255, 0.85);
+  box-shadow: 0 0 0 1px rgba(48, 160, 255, 0.25);
+}
+
+.filmItem__thumb {
+  height: 70px;
+  background: rgba(255,255,255,0.04);
+}
+
+.filmItem__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.filmItem__meta {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timelineBar {
+  position: relative;
+  height: 96px;
+  border-radius: 12px;
+  border: 1px dashed rgba(255,255,255,0.14);
+  background: rgba(0,0,0,0.12);
+  overflow: hidden;
+}
+
+.timelineBar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      to right,
+      rgba(255,255,255,0.0) 0,
+      rgba(255,255,255,0.0) calc((100% / 24) - 1px),
+      rgba(255,255,255,0.06) calc((100% / 24) - 1px),
+      rgba(255,255,255,0.06) calc(100% / 24)
+    );
+  opacity: 0.8;
+}
+
+.clipMarker {
+  position: absolute;
+  top: 12px;
+  transform: translateX(-50%);
+  cursor: pointer;
+}
+
+.clipMarker__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(124,92,255,0.95);
+  border: 2px solid rgba(0,0,0,0.35);
+  box-shadow: 0 8px 18px rgba(0,0,0,0.35);
+}
+
+.clipMarker:hover .clipMarker__dot {
+  background: rgba(124,92,255,1);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.45);
+}
+
+.clipBlock {
+  position: absolute;
+  top: 10px;
+  height: 44px;
+  border-radius: 10px;
+  border: 1px solid rgba(124,92,255,0.5);
+  background: rgba(124,92,255,0.18);
+  cursor: pointer;
+}
+
+.clipBlock:hover {
+  border-color: rgba(124,92,255,0.9);
+  background: rgba(124,92,255,0.28);
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 10;
+  width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(12, 16, 32, 0.95);
+  box-shadow: 0 14px 40px rgba(0,0,0,0.55);
+  padding: 10px;
+}
+
+.tooltip__time {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.tooltip__img {
+  width: 100%;
+  border-radius: 10px;
+  display: block;
+  background: rgba(255,255,255,0.06);
+}

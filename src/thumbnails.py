@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+from dotenv import dotenv_values
+
+from src.viewer_db import DbClip
+
+
+@dataclass(frozen=True)
+class ThumbnailConfig:
+    enabled: bool
+    # Directory under OUT_DIR used for generated thumbnails.
+    root_dirname: str = "thumbnails"
+
+
+def load_thumbnail_config() -> ThumbnailConfig:
+    # Support runtime .env files for Azure deployments (azure_start.sh writes /app/.env).
+    env_path_candidates = [
+        Path(str(os.getenv("RUNTIME_ENV_PATH", "")).strip()).expanduser() if os.getenv("RUNTIME_ENV_PATH") else None,
+        Path("/app/.env"),
+    ]
+    file_kv: dict[str, str] = {}
+    for candidate in env_path_candidates:
+        if not candidate:
+            continue
+        if candidate.exists():
+            raw_kv = dotenv_values(candidate)
+            for k, v in raw_kv.items():
+                if not k:
+                    continue
+                file_kv[str(k)] = "" if v is None else str(v)
+            break
+    merged = dict(file_kv)
+    merged.update(os.environ)
+
+    raw = str(merged.get("THUMBNAIL_GENERATION", "")).strip().lower()
+    enabled = raw in {"1", "true", "yes", "y", "on"}
+    return ThumbnailConfig(enabled=enabled)
+
+
+def _date_path_parts(dt: datetime) -> tuple[str, str, str]:
+    return (f"{dt.year:04d}", f"{dt.month:02d}", f"{dt.day:02d}")
+
+
+def _thumb_dir_for(out_dir: Path, clip: DbClip, cfg: ThumbnailConfig) -> Path:
+    y, m, d = _date_path_parts(clip.start_time)
+    return out_dir / cfg.root_dirname / clip.camera_id / y / m / d
+
+
+def generated_thumbnail_path(out_dir: Path, clip: DbClip, *, size: str, cfg: ThumbnailConfig) -> Path:
+    if size not in {"small", "large"}:
+        raise ValueError("size must be small or large")
+    suffix = "_small" if size == "small" else "_large"
+    return _thumb_dir_for(out_dir, clip, cfg) / f"{clip.clip_id}{suffix}.jpg"
+
+
+def _ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+
+def can_generate_thumbnails() -> bool:
+    cfg = load_thumbnail_config()
+    return cfg.enabled and _ffmpeg_available()
+
+
+def _run_ffmpeg_extract(*, input_path: Path, output_path: Path, width: int) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Extract a representative frame near the start; cameras often record fixed-length clips.
+    # Use scale to generate predictable thumbnail sizes.
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        "1",
+        "-i",
+        str(input_path),
+        "-frames:v",
+        "1",
+        "-vf",
+        f"scale={width}:-1",
+        "-q:v",
+        "4",
+        str(output_path),
+    ]
+
+    subprocess.run(cmd, check=True)
+
+
+def ensure_thumbnail(out_dir: Path, clip: DbClip, *, size: str) -> Path | None:
+    # Prefer sidecar thumbnails if present.
+    sidecar = clip.find_thumbnail()
+    if sidecar is not None:
+        try:
+            if sidecar.stat().st_size > 0:
+                return sidecar
+        except FileNotFoundError:
+            pass
+
+    cfg = load_thumbnail_config()
+    if not cfg.enabled:
+        return None
+
+    if not _ffmpeg_available():
+        return None
+
+    target = generated_thumbnail_path(out_dir, clip, size=size, cfg=cfg)
+    try:
+        if target.exists() and target.is_file() and target.stat().st_size > 0:
+            return target
+    except FileNotFoundError:
+        pass
+
+    width = 320 if size == "small" else 640
+
+    try:
+        _run_ffmpeg_extract(input_path=clip.abs_path, output_path=target, width=width)
+    except subprocess.CalledProcessError:
+        # Treat as missing thumbnail for now; caller decides 404.
+        return None
+
+    if target.exists() and target.is_file():
+        return target
+
+    return None

@@ -170,10 +170,10 @@ def generate_deploy_yaml(
         ]
 
     # NOTE: In ACI, setting `command:` overrides the image ENTRYPOINT.
-    # Our Dockerfile ENTRYPOINT runs /usr/local/bin/azure_start.sh to fetch
-    # Key Vault secrets and then exec the app process. When the compose-driven
-    # deploy sets an explicit app command (e.g. uvicorn/python), we must prefix
-    # it with azure_start.sh to preserve that behavior.
+    # Our image ENTRYPOINT runs /usr/local/bin/azure_start.sh to fetch Key Vault
+    # runtime env and then exec the app process.
+    # When we set an explicit app command (e.g. from docker-compose), prefix it
+    # with azure_start.sh to preserve that behavior.
     if app_command:
         effective_app_command = list(app_command)
         if effective_app_command[0] != "/usr/local/bin/azure_start.sh":
@@ -190,7 +190,8 @@ def generate_deploy_yaml(
         indent(12, "mountPath: /home/coder/workspace"),
     ]
 
-    # Optionally mount durable storage under /data for the app.
+    # If the app expects durable storage under /data (e.g. camera-storage-viewer OUT_DIR),
+    # mount a share there as well.
     if data_share_name:
         lines += [
             indent(10, "- name: data-volume"),

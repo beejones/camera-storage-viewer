@@ -52,6 +52,7 @@ from env_schema import (
     apply_defaults,
     get_spec,
     parse_dotenv_file,
+    normalize_legacy_deploy_keys,
     validate_cross_field_rules,
     validate_known_keys,
     validate_required,
@@ -601,6 +602,9 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     
             if deploy_env_path.exists():
                 deploy_kv_file = parse_dotenv_file(deploy_env_path)
+                deploy_kv_file, legacy_warnings = normalize_legacy_deploy_keys(deploy_kv_file)
+                for w in legacy_warnings:
+                    print(f"⚠️  [env] {w}", file=sys.stderr)
                 validate_known_keys(DEPLOY_SCHEMA, deploy_kv_file, context=f"deploy ({deploy_env_path.name})")
         except EnvValidationError as e:
             print(e.format(), file=sys.stderr)
@@ -632,6 +636,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
                     validate_required(RUNTIME_SCHEMA, runtime_kv, context=f"runtime ({runtime_env_path.name})")
     
                 deploy_kv_file = parse_dotenv_file(deploy_env_path) if deploy_env_path.exists() else {}
+                deploy_kv_file, _legacy_warnings = normalize_legacy_deploy_keys(deploy_kv_file)
                 deploy_schema_keys = {spec.key.value for spec in DEPLOY_SCHEMA}
                 deploy_kv_env = {k: v for k, v in os.environ.items() if k in deploy_schema_keys and str(v).strip()}
                 deploy_kv = dict(deploy_kv_file)
@@ -1026,7 +1031,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         if push_requested:
             if not registry_server:
                 raise SystemExit(
-                    "Cannot determine registry server for push. For GHCR-only mode, set GHCR_PRIVATE=true and ensure CONTAINER_IMAGE is a ghcr.io/... ref."
+                    "Cannot determine registry server for push. For GHCR-only mode, set GHCR_PRIVATE=true and ensure APP_IMAGE is a ghcr.io/... ref."
                 )
 
             # For pushes, credentials are required even if the image is public.
@@ -1041,13 +1046,19 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             docker_context = (args.docker_context or "").strip() or config_docker_context or str(repo_root)
             dockerfile = (args.dockerfile or "").strip() or None
     
-            if not dockerfile and not args.docker_context and not config_docker_context:
-                if (repo_root / "docker" / "Dockerfile").exists():
-                    # If docker/Dockerfile exists and no context given,
-                    # assume the user wants to build the inner "docker" directory as a context.
-                    docker_context = str(repo_root / "docker")
-                    # Leave dockerfile=None so it defaults to "Dockerfile" inside that context.
-                    dockerfile = None
+            # Auto-detect our Dockerfile location.
+            # Many repos (including camera-storage-viewer) keep the Dockerfile in docker/Dockerfile.
+            # Keep default context as repo root so COPY can include files like requirements.txt.
+            if not dockerfile:
+                candidate = repo_root / "docker" / "Dockerfile"
+                if candidate.exists():
+                    dockerfile = str(candidate)
+
+            # Resolve relative Dockerfile paths against repo root for determinism.
+            if dockerfile:
+                dockerfile_path = Path(dockerfile)
+                if not dockerfile_path.is_absolute():
+                    dockerfile = str((repo_root / dockerfile_path).resolve())
     
             if build_requested:
                 print(f"🏗️  [docker] building image: {image}")
