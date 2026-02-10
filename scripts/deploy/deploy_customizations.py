@@ -22,8 +22,10 @@ from typing import Any, Protocol
 
 
 # Upstream PR #18 splits secrets into `.env.secrets`.
-# Keep `.env` slimmed to only upstream runtime keys during strict validation.
+# Keep `.env` and `.env.secrets` slimmed to only upstream-known keys during
+# strict validation, but restore full files before Key Vault uploads.
 _UPSTREAM_RUNTIME_KEYS = {"BASIC_AUTH_USER"}
+_UPSTREAM_SECRETS_KEYS = {"BASIC_AUTH_HASH", "APP_SECRET"}
 
 
 def _env_view(ctx: Any) -> dict[str, Any]:
@@ -182,6 +184,9 @@ class CameraStorageViewerHooks:
         runtime_path = repo_root / ".env"
         full_path = repo_root / ".env.full"
 
+        secrets_path = repo_root / ".env.secrets"
+        secrets_full_path = repo_root / ".env.secrets.full"
+
         deploy_env_path = repo_root / ".env.deploy"
         deploy_full_path = repo_root / ".env.deploy.full"
 
@@ -217,6 +222,48 @@ class CameraStorageViewerHooks:
                     return
 
             atexit.register(_restore_env)
+
+        # Runtime secrets file: upstream validates `.env.secrets` strictly against
+        # SECRETS_SCHEMA. This repo may keep additional app secrets there (e.g.
+        # FTP_USERS_JSON, FTP_PASSWORD) which upstream doesn't know.
+        #
+        # Strategy:
+        # - Preserve full `.env.secrets` to `.env.secrets.full`.
+        # - Temporarily rewrite `.env.secrets` to only upstream-known keys for validation.
+        # - Restore the full file in post_validate_env (and at exit as safety).
+        if secrets_path.exists():
+            try:
+                secrets_text = secrets_path.read_text(encoding="utf-8")
+            except Exception:
+                secrets_text = ""
+
+            secrets_kv = _parse_dotenv_file(secrets_path)
+
+            if not secrets_full_path.exists():
+                try:
+                    secrets_full_path.write_text(secrets_text, encoding="utf-8")
+                except Exception:
+                    pass
+
+            slim_secrets_kv = {k: v for k, v in secrets_kv.items() if k in _UPSTREAM_SECRETS_KEYS}
+            _write_slim_dotenv(
+                secrets_path,
+                slim_secrets_kv,
+                header_lines=[
+                    "# TEMPORARY during deploy: slimmed for upstream strict validation.",
+                    "# Source of truth is still this repo's .env.secrets; it will be restored after validation.",
+                ],
+            )
+
+            def _restore_secrets() -> None:
+                try:
+                    if secrets_full_path.exists():
+                        secrets_path.write_text(secrets_full_path.read_text(encoding="utf-8"), encoding="utf-8")
+                        secrets_full_path.unlink(missing_ok=True)
+                except Exception:
+                    return
+
+            atexit.register(_restore_secrets)
 
         # Deploy-time file: upstream validates `.env.deploy` strictly and rejects unknown keys.
         # This repo may carry extra app-specific keys there (e.g. FTP_CPU_CORES) which upstream
@@ -280,6 +327,18 @@ class CameraStorageViewerHooks:
 
     def post_validate_env(self, ctx: Any) -> None:
         env = _env_view(ctx)
+
+        # Restore `.env.secrets` as soon as strict validation is done so the
+        # upstream engine uploads full secrets to Key Vault later in the run.
+        repo_root = _repo_root(ctx)
+        secrets_path = repo_root / ".env.secrets"
+        secrets_full_path = repo_root / ".env.secrets.full"
+        if secrets_full_path.exists():
+            try:
+                secrets_path.write_text(secrets_full_path.read_text(encoding="utf-8"), encoding="utf-8")
+                secrets_full_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         def _int(name: str, default: int) -> int:
             raw = str(env.get(name, "") or "").strip()
