@@ -118,6 +118,14 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
 
     argv_list = list(argv if argv is not None else sys.argv[1:])
 
+    # This repo's Dockerfile lives at docker/Dockerfile. The upstream engine defaults
+    # to `Dockerfile` in the context root unless --dockerfile is provided.
+    # Add a sensible default only when the user hasn't specified one.
+    if not _argv_has_flag(argv_list, "--dockerfile"):
+        candidate = engine_repo_root / "docker" / "Dockerfile"
+        if candidate.exists():
+            argv_list.extend(["--dockerfile", str(candidate)])
+
     # Preserve full runtime env for upload while hooks slim .env for strict validation.
     runtime_env_path = repo_root / ".env"
     full_env_path = repo_root / ".env.full"
