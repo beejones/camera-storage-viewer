@@ -10,7 +10,27 @@ This repo integrates the upstream deploy engine **protected-azure-container** as
 - Use the wrapper scripts in `scripts/deploy/` as the stable entrypoints.
 - Keep repo-specific behavior in `scripts/deploy/deploy_customizations.py` (hooks).
 
-After cloning, run `git submodule update --init --recursive` (or `python scripts/sync_deploy_upstream.py --init`).
+After cloning, initialize the submodule:
+
+```bash
+git submodule update --init --recursive
+```
+
+Or via the helper:
+
+```bash
+python scripts/sync_deploy_upstream.py --init
+```
+
+To update the pinned upstream engine version later:
+
+```bash
+python scripts/sync_deploy_upstream.py --update
+git add scripts/deploy/_upstream
+git commit -m "Update deploy engine submodule"
+```
+
+CI and deploy workflows must checkout submodules (GitHub Actions: `actions/checkout@v4` with `submodules: recursive`).
 
 ## Upstream (Project Origin)
 
@@ -20,6 +40,8 @@ This repository started as a clone/fork of:
 It keeps the same overall deployment approach (Azure Container Instances + a small TLS proxy sidecar), but adapts it to the camera FTP ingest + viewer use-case.
 
 ### How to pull updates from upstream
+
+Note: with the submodule integration, **deploy-engine updates should be done by updating the submodule** (see above). Merging upstream `main` is still possible, but is more likely to cause conflicts.
 
 One-liner (merge upstream `main` into your current branch):
 
@@ -57,7 +79,7 @@ git rebase upstream/main
 4) Resolve any conflicts, run tests, and push your branch:
 
 ```bash
-python -m pytest
+.venv/bin/python -m pytest
 git push
 ```
 
