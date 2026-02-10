@@ -1,3 +1,9 @@
 {
-    "python.defaultInterpreterPath": "/home/ronny/dev/camera-storage-viewer/.venv/bin/python"
+    "python.defaultInterpreterPath": "/home/ronny/dev/camera-storage-viewer/.venv/bin/python",
+    "chat.tools.terminal.autoApprove": {
+        "/^cd /home/ronny/dev/camera-storage-viewer && /home/ronny/dev/camera-storage-viewer/\\.venv/bin/python scripts/deploy/validate_env\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }

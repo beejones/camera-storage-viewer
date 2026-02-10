@@ -13,7 +13,26 @@ function fmtTs(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return String(iso);
-  return d.toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+  return d.toLocaleString(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function tzOffsetMinutes() {
+  // JS returns minutes to add to local to get UTC (UTC - local). We want minutes east of UTC.
+  return -new Date().getTimezoneOffset();
+}
+
+function localDateYYYYMMDD(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 async function apiGetJson(url) {
@@ -51,25 +70,36 @@ function setSelectedCamera(cameraId) {
 }
 
 function timelineWidthPx() {
-  return Math.max(24 * state.zoomPxPerHour, 24 * 80);
+  const { start, end } = _dayBoundsMs();
+  const hours = Math.max(1, (end - start) / (60 * 60 * 1000));
+  return Math.max(hours * state.zoomPxPerHour, 24 * 80);
 }
 
-function _dayStartMs() {
-  return new Date(`${state.date}T00:00:00.000Z`).getTime();
+function _dayBoundsMs() {
+  // Interpret state.date as a *local* calendar day.
+  const [y, m, d] = String(state.date || '').split('-').map((x) => Number(x));
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
+    const now = new Date();
+    const startFallback = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+    return { start: startFallback, end: startFallback + 24 * 60 * 60 * 1000 };
+  }
+
+  const start = new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+  const end = new Date(y, m - 1, d + 1, 0, 0, 0, 0).getTime();
+  return { start, end };
 }
 
 function timelineXFor(iso) {
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return 0;
-  const start = _dayStartMs();
-  const end = start + 24 * 60 * 60 * 1000;
+  const { start, end } = _dayBoundsMs();
   const frac = (t - start) / Math.max(1, end - start);
   return Math.max(0, Math.min(1, frac));
 }
 
 function isoForFrac(frac) {
-  const start = _dayStartMs();
-  const t = start + (Math.max(0, Math.min(1, frac)) * 24 * 60 * 60 * 1000);
+  const { start, end } = _dayBoundsMs();
+  const t = start + (Math.max(0, Math.min(1, frac)) * Math.max(1, end - start));
   return new Date(t).toISOString();
 }
 
@@ -98,7 +128,8 @@ function renderTimelineScale() {
   scale.style.width = `${widthPx}px`;
 
   const { tick, label } = chooseTickMinutes();
-  const totalMinutes = 24 * 60;
+  const { start, end } = _dayBoundsMs();
+  const totalMinutes = Math.max(1, Math.round((end - start) / 60000));
 
   for (let m = 0; m <= totalMinutes; m += tick) {
     const x = (m / totalMinutes) * widthPx;
@@ -112,7 +143,8 @@ function renderTimelineScale() {
     scale.appendChild(tickEl);
 
     if (isLabel) {
-      const h = Math.floor(m / 60);
+      const t = new Date(start + (m * 60 * 1000));
+      const h = t.getHours();
       const labelEl = document.createElement('div');
       labelEl.className = 'timelineTickLabel';
       labelEl.style.left = `${x}px`;
@@ -287,7 +319,7 @@ function renderTimeline() {
     const meta = document.createElement('div');
     meta.className = 'filmItem__meta';
     const t = new Date(clip.start_time);
-    meta.textContent = `${String(t.getUTCHours()).padStart(2, '0')}:${String(t.getUTCMinutes()).padStart(2, '0')}:${String(t.getUTCSeconds()).padStart(2, '0')}`;
+    meta.textContent = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}:${String(t.getSeconds()).padStart(2, '0')}`;
 
     item.appendChild(thumb);
     item.appendChild(meta);
@@ -400,7 +432,7 @@ async function loadClips() {
     return;
   }
 
-  const url = `/api/cameras/${encodeURIComponent(cameraId)}/clips?date=${encodeURIComponent(state.date)}`;
+  const url = `/api/cameras/${encodeURIComponent(cameraId)}/clips?date=${encodeURIComponent(state.date)}&tz_offset_minutes=${encodeURIComponent(String(tzOffsetMinutes()))}`;
   const clips = await apiGetJson(url);
 
   state.clips = clips;
@@ -414,10 +446,10 @@ async function loadClips() {
 }
 
 function init() {
-  const todayUtc = new Date().toISOString().slice(0, 10);
+  const todayLocal = localDateYYYYMMDD(new Date());
 
-  state.date = todayUtc;
-  $('dateInput').value = todayUtc;
+  state.date = todayLocal;
+  $('dateInput').value = todayLocal;
 
   $('dateInput').addEventListener('change', (e) => {
     state.date = e.target.value;

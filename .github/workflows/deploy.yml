@@ -248,7 +248,10 @@ jobs:
           echo "AZURE_CONTAINER_NAME=${{ vars.AZURE_CONTAINER_NAME || 'camera-storage-viewer' }}"
           echo ""
           echo "APP_IMAGE=ghcr.io/${{ github.repository }}:latest"
-          echo "CADDY_IMAGE=${{ vars.CADDY_IMAGE || 'caddy:2-alpine' }}"
+          # Default to GHCR to avoid Docker Hub pull/rate-limit issues in ACI.
+          # Prefer a per-repo mirror (ghcr.io/<owner>/caddy:2-alpine) if vars.CADDY_IMAGE is unset/empty.
+          # Note: handle the case where vars.CADDY_IMAGE is set but empty.
+          echo "CADDY_IMAGE=${{ (vars.CADDY_IMAGE != '' && vars.CADDY_IMAGE) || format('ghcr.io/{0}/caddy:2-alpine', github.repository_owner) }}"
           echo "PUBLIC_DOMAIN=${{ vars.PUBLIC_DOMAIN || '' }}"
           echo "ACME_EMAIL=${{ vars.ACME_EMAIL || '' }}"
           echo ""

@@ -13,9 +13,9 @@ It also cooperates with this repo's deploy hooks at:
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import time as time
-import importlib.util
 from pathlib import Path
 
 try:
@@ -44,8 +44,44 @@ kv_secret_get = _DEFAULT
 kv_secret_set = _DEFAULT
 
 
-def generate_deploy_yaml(**kwargs) -> str:
-    """Backwards-compatible helper for unit tests.
+def generate_deploy_yaml(
+    *,
+    name: str,
+    location: str,
+    image: str,
+    registry_server: str | None,
+    registry_username: str | None,
+    registry_password: str | None,
+    identity_id: str,
+    identity_client_id: str | None,
+    identity_tenant_id: str | None,
+    storage_name: str,
+    storage_key: str,
+    kv_name: str,
+    dns_label: str,
+    public_domain: str,
+    acme_email: str,
+    basic_auth_user: str,
+    basic_auth_hash: str,
+    app_cpu_cores: float,
+    app_memory_gb: float,
+    share_workspace: str,
+    data_share_name: str | None = None,
+    caddy_data_share_name: str = "",
+    caddy_config_share_name: str = "",
+    caddy_image: str = "",
+    caddy_cpu_cores: float = 0.5,
+    caddy_memory_gb: float = 0.5,
+    app_port: int = 8080,
+    app_ports: list[int] | None = None,
+    app_command: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
+    other_image: str | None = None,
+    other_cpu_cores: float = 0.5,
+    other_memory_gb: float = 0.5,
+    restart_policy: str = "OnFailure",
+) -> str:
+    """Back-compat helper for tests/external callers.
 
     The deploy entrypoint is now the upstream engine, but this repo still keeps
     its YAML rendering helpers in `scripts/deploy/azure_deploy_yaml_helpers.py`.
@@ -55,7 +91,43 @@ def generate_deploy_yaml(**kwargs) -> str:
         from scripts.deploy import azure_deploy_yaml_helpers as yaml_helpers  # type: ignore
     except ImportError:
         import azure_deploy_yaml_helpers as yaml_helpers  # type: ignore
-    return yaml_helpers.generate_deploy_yaml(**kwargs)
+
+    return yaml_helpers.generate_deploy_yaml(
+        name=name,
+        location=location,
+        image=image,
+        registry_server=registry_server,
+        registry_username=registry_username,
+        registry_password=registry_password,
+        identity_id=identity_id,
+        identity_client_id=identity_client_id,
+        identity_tenant_id=identity_tenant_id,
+        storage_name=storage_name,
+        storage_key=storage_key,
+        kv_name=kv_name,
+        dns_label=dns_label,
+        public_domain=public_domain,
+        acme_email=acme_email,
+        basic_auth_user=basic_auth_user,
+        basic_auth_hash=basic_auth_hash,
+        app_cpu_cores=app_cpu_cores,
+        app_memory_gb=app_memory_gb,
+        share_workspace=share_workspace,
+        data_share_name=data_share_name,
+        caddy_data_share_name=caddy_data_share_name,
+        caddy_config_share_name=caddy_config_share_name,
+        caddy_image=caddy_image,
+        caddy_cpu_cores=caddy_cpu_cores,
+        caddy_memory_gb=caddy_memory_gb,
+        app_port=app_port,
+        app_ports=app_ports,
+        app_command=app_command,
+        extra_env=extra_env,
+        other_image=other_image,
+        other_cpu_cores=other_cpu_cores,
+        other_memory_gb=other_memory_gb,
+        restart_policy=restart_policy,
+    )
 
 
 def _argv_has_flag(argv: list[str], flag: str) -> bool:
@@ -109,6 +181,8 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     ]:
         sys.modules.pop(key, None)
 
+    # Force-load upstream env_schema under the canonical name `env_schema`.
+    # This makes downstream wrappers and upstream engine agree on the module.
     env_schema_path = upstream_deploy_dir / "env_schema.py"
     spec = importlib.util.spec_from_file_location("env_schema", env_schema_path)
     if spec and spec.loader:
@@ -120,7 +194,6 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
 
     # This repo's Dockerfile lives at docker/Dockerfile. The upstream engine defaults
     # to `Dockerfile` in the context root unless --dockerfile is provided.
-    # Add a sensible default only when the user hasn't specified one.
     if not _argv_has_flag(argv_list, "--dockerfile"):
         candidate = engine_repo_root / "docker" / "Dockerfile"
         if candidate.exists():
@@ -147,9 +220,8 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     import azure_deploy_container as upstream_engine  # type: ignore
 
     _propagate_test_overrides(upstream_engine=upstream_engine)
-
     upstream_engine.main(argv_list, repo_root_override=repo_root)
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
