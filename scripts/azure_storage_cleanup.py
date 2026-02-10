@@ -33,19 +33,30 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+
+def _repo_root() -> Path:
+    # This file lives at <repo>/scripts/azure_storage_cleanup.py
+    return Path(__file__).resolve().parents[1]
+
+
+# Ensure deploy helpers are importable.
+_DEPLOY_DIR = _repo_root() / "scripts" / "deploy"
+sys.path.insert(0, str(_DEPLOY_DIR))
+
 from env_schema import VarsEnum
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
-# Add scripts dir to path to allow importing azure_utils
-sys.path.append(str(Path(__file__).parent))
+# Add deploy scripts dir to path to allow importing azure_utils
 try:
     from azure_utils import run_az_command
 except ImportError:
-    sys.path.append("scripts")
+    # Fall back for older working dirs / invocation styles.
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "deploy"))
+    sys.path.insert(0, str(_repo_root() / "scripts" / "deploy"))
     from azure_utils import run_az_command
 
 

@@ -47,8 +47,27 @@ git rebase upstream/main
 4) Resolve any conflicts, run tests, and push your branch:
 
 ```bash
-python -m pytest
+make test
 git push
+```
+
+## Development: Python env + tests
+
+The tests require Python dependencies like `fastapi` and `pytest-asyncio`.
+If you run `pytest` from your global Python, you may see collection errors like:
+
+- `ModuleNotFoundError: No module named 'fastapi'`
+
+Recommended:
+
+```bash
+make test
+```
+
+Or explicitly run pytest via the repo virtualenv:
+
+```bash
+./.venv/bin/python -m pytest -q
 ```
 
 Prototype (this step): an **FTP server** you can point one or more cameras at (starting with Reolink), so we can validate uploads and networking (PASV, port ranges) end-to-end.
@@ -99,6 +118,10 @@ If you use the Caddy proxy (default in docker-compose), the Viewer UI is also av
 Uploaded files land under:
 - `out/incoming/<camera_id>/...`
 
+Note: some cameras can be configured with an absolute "server directory" like `/data/incoming/<camera_id>`.
+When used with this server (which jails each user to `out/incoming/<camera_id>`), that can accidentally create
+a duplicated nested tree like `out/incoming/<camera_id>/data/incoming/<camera_id>/...`.
+
 ## Ingest (Move uploads into library)
 
 Uploads initially land under `out/incoming/`. The viewer can index those directly, but for a stable library layout you can ingest them into:
@@ -114,6 +137,24 @@ Apply moves (default skips files newer than 60s):
 
 ```bash
 python3 scripts/ingest_once.py --out-dir ./out --apply
+```
+
+## Cleanup: remove empty per-camera `data/` directories
+
+Some cameras try to `CWD /data` while logged into a jailed per-camera FTP homedir.
+That can create an extra empty directory like:
+- `out/incoming/<camera_id>/data/`
+
+Dry-run:
+
+```bash
+python3 scripts/cleanup_empty_camera_data_dirs.py --out-dir /data
+```
+
+Apply deletions:
+
+```bash
+python3 scripts/cleanup_empty_camera_data_dirs.py --out-dir /data --apply
 ```
 
 ## Viewer API (Local)
@@ -235,6 +276,32 @@ Next steps are documented in [planning/camera-storage-viewer-plan.md](planning/c
 Downstream consumers can customize the deployment process (e.g., override images, resources, or patch YAML) using **Deployment Hooks**. This prevents the need to maintain a fork with modified core scripts.
 
 See: [docs/deploy/HOOKS.md](docs/deploy/HOOKS.md)
+
+## Debugging deploys: restart policy (ACI)
+
+By default, Azure Container Instances restarts the container group when a container exits non-zero (`restartPolicy: OnFailure`), which can make debugging CrashLoopBackOff noisy.
+
+You can control this via the deploy script:
+
+- Normal (default, restart on failure):
+
+```bash
+python3 scripts/deploy/azure_deploy_container.py --restart-policy OnFailure
+```
+
+- Debug (do not restart on failure; container stays terminated so you can inspect logs/state):
+
+```bash
+python3 scripts/deploy/azure_deploy_container.py --restart-policy Never
+```
+
+- Optional: always restart (even on clean exit):
+
+```bash
+python3 scripts/deploy/azure_deploy_container.py --restart-policy Always
+```
+
+You can also set `ACI_RESTART_POLICY` (or `AZURE_RESTART_POLICY`) in your shell instead of passing the flag.
 
 ## Migration Guide
 

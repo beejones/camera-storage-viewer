@@ -239,11 +239,19 @@ def list_cameras() -> list[CameraOut]:
 def list_clips(
     camera_id: str,
     day: Annotated[date, Query(alias="date")],
+    tz_offset_minutes: Annotated[int | None, Query(ge=-840, le=840)] = None,
 ) -> list[ClipOut]:
     out_dir = _out_dir()
     db_path = default_db_path(out_dir)
     update_index_from_storage(out_dir=out_dir, db_path=db_path)
-    clips = db_list_clips_for_day(out_dir=out_dir, db_path=db_path, camera_id=camera_id, day=day, refresh_index=False)
+    clips = db_list_clips_for_day(
+        out_dir=out_dir,
+        db_path=db_path,
+        camera_id=camera_id,
+        day=day,
+        tz_offset_minutes=tz_offset_minutes,
+        refresh_index=False,
+    )
 
     thumb_cfg = load_thumbnail_config()
     can_generate = can_generate_thumbnails()

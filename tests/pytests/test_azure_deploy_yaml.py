@@ -43,6 +43,8 @@ def test_generate_deploy_yaml_defaults(base_args):
     """Test generating YAML with standard app + sidecar configuration."""
     yaml_str = yaml_helpers.generate_deploy_yaml(**base_args)
     data = yaml.safe_load(yaml_str)
+
+    assert data["properties"]["restartPolicy"] == "OnFailure"
     
     containers = data["properties"]["containers"]
     assert len(containers) == 2
@@ -71,6 +73,8 @@ def test_generate_deploy_yaml_with_other(base_args):
     
     yaml_str = yaml_helpers.generate_deploy_yaml(**base_args)
     data = yaml.safe_load(yaml_str)
+
+    assert data["properties"]["restartPolicy"] == "OnFailure"
     
     containers = data["properties"]["containers"]
     assert len(containers) == 3
@@ -96,3 +100,9 @@ def test_normalization(base_args):
     app = data["properties"]["containers"][0]
     # 1.12 -> ceil(1.12 * 10) / 10 = ceil(11.2)/10 = 12/10 = 1.2
     assert app["properties"]["resources"]["requests"]["memoryInGB"] == 1.2
+
+
+def test_restart_policy_override(base_args):
+    yaml_str = yaml_helpers.generate_deploy_yaml(**base_args, restart_policy="Never")
+    data = yaml.safe_load(yaml_str)
+    assert data["properties"]["restartPolicy"] == "Never"

@@ -381,6 +381,7 @@ def ensure_infra(
     keyvault_name: str,
     storage_name: str,
     shares: list[str],
+    file_share_quota_gb: int = 5,
 ) -> None:
     run_az_command(["account", "show", "--output", "none"], capture_output=False)
 
@@ -405,7 +406,12 @@ def ensure_infra(
     )
 
     for share in shares:
-        ensure_file_share_exists(account_name=storage_name, share_name=share, resource_group=resource_group)
+        ensure_file_share_exists(
+            account_name=storage_name,
+            share_name=share,
+            resource_group=resource_group,
+            quota_gb=file_share_quota_gb,
+        )
 
 
 def run_cmd(cmd: list[str], *, cwd: str | None = None, input_text: str | None = None) -> None:
@@ -771,7 +777,10 @@ def get_identity_details(name: str, resource_group: str) -> tuple[str, str | Non
     return identity_id, client_id, tenant_id
 
 
-def ensure_file_share_exists(account_name: str, share_name: str, resource_group: str) -> None:
+def ensure_file_share_exists(account_name: str, share_name: str, resource_group: str, *, quota_gb: int = 5) -> None:
+    quota = str(int(quota_gb))
+
+    # Create is idempotent; ignore errors to keep bootstrap resilient.
     run_az_command(
         [
             "storage",
@@ -784,7 +793,28 @@ def ensure_file_share_exists(account_name: str, share_name: str, resource_group:
             "--name",
             share_name,
             "--quota",
-            "5",
+            quota,
+            "--output",
+            "none",
+        ],
+        capture_output=False,
+        ignore_errors=True,
+    )
+
+    # If the share already exists, create won't update the quota. Try to converge quota anyway.
+    run_az_command(
+        [
+            "storage",
+            "share-rm",
+            "update",
+            "--storage-account",
+            account_name,
+            "--resource-group",
+            resource_group,
+            "--name",
+            share_name,
+            "--quota",
+            quota,
             "--output",
             "none",
         ],

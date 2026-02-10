@@ -28,6 +28,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+# Keep env var names as constants (tests enforce no literal keys in
+# os.getenv/os.environ usage inside scripts/deploy).
+ENV_ACI_RESTART_POLICY = "ACI_RESTART_POLICY"
+ENV_AZURE_RESTART_POLICY = "AZURE_RESTART_POLICY"
+
+
 # Add scripts dir to path to allow importing sibling modules when running as a script.
 sys.path.append(str(Path(__file__).parent))
 
@@ -139,6 +145,7 @@ def generate_deploy_yaml(
     other_image: str | None = None,
     other_cpu_cores: float = 0.5,
     other_memory_gb: float = 0.5,
+    restart_policy: str = "OnFailure",
 ) -> str:
     """Back-compat re-export for tests and external callers."""
 
@@ -176,6 +183,7 @@ def generate_deploy_yaml(
         other_image=other_image,
         other_cpu_cores=other_cpu_cores,
         other_memory_gb=other_memory_gb,
+        restart_policy=restart_policy,
     )
 
 
@@ -219,6 +227,16 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         "--basic-auth-password",
         default=None,
         help="Basic Auth password (used to compute bcrypt hash if --basic-auth-hash not provided)",
+    )
+
+    parser.add_argument(
+        "--restart-policy",
+        default=None,
+        choices=["Always", "OnFailure", "Never"],
+        help=(
+            "ACI container group restart policy. Default is OnFailure. "
+            "For debugging CrashLoopBackOff, use Never so the container does not restart automatically."
+        ),
     )
     parser.add_argument(
         "--bcrypt-cost",
@@ -719,6 +737,14 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             args.caddy_data_share_name or f"{name}-caddy-data",
             args.caddy_config_share_name or f"{name}-caddy-config",
         ]
+
+        quota_raw = (os.getenv(VarsEnum.AZURE_FILE_SHARE_QUOTA_GB.value) or "").strip()
+        try:
+            file_share_quota_gb = int(quota_raw) if quota_raw else 5
+        except ValueError:
+            raise SystemExit(
+                f"Invalid {VarsEnum.AZURE_FILE_SHARE_QUOTA_GB.value}={quota_raw!r}. Must be an integer number of GB."
+            )
         ensure_infra(
             resource_group=rg,
             location=location,
@@ -727,6 +753,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             keyvault_name=kv_name,
             storage_name=storage_name,
             shares=shares_to_ensure,
+            file_share_quota_gb=file_share_quota_gb,
         )
     
         subscription_id = (os.getenv(VarsEnum.AZURE_SUBSCRIPTION_ID.value) or "").strip()
@@ -1219,6 +1246,13 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     
         # Hook: pre_render_yaml
         hooks.call("pre_render_yaml", ctx, plan)
+
+        restart_policy = (
+            str(getattr(args, "restart_policy", "") or "").strip()
+            or str(os.getenv(ENV_ACI_RESTART_POLICY, "") or "").strip()
+            or str(os.getenv(ENV_AZURE_RESTART_POLICY, "") or "").strip()
+            or "OnFailure"
+        )
     
         yaml_text = generate_deploy_yaml(
             name=plan.name,
@@ -1254,6 +1288,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             other_image=plan.other_image,
             other_cpu_cores=plan.other_cpu,
             other_memory_gb=plan.other_memory,
+            restart_policy=restart_policy,
         )
     
         # Hook: post_render_yaml
