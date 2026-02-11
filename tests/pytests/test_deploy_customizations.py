@@ -78,7 +78,7 @@ def test_build_deploy_plan_sets_metadata_and_ports():
     assert plan.ftp_passive_range == "50000-50003"
 
 
-def test_pre_validate_env_comments_out_unknown_deploy_keys(tmp_path: Path):
+def test_pre_validate_env_does_not_rewrite_deploy_env(tmp_path: Path):
     hooks = deploy_customizations.get_hooks()
 
     # Simulate a repo root with a deploy env that includes viewer-specific keys.
@@ -103,5 +103,6 @@ def test_pre_validate_env_comments_out_unknown_deploy_keys(tmp_path: Path):
     hooks.pre_validate_env(ctx)
 
     deploy_text = (tmp_path / ".env.deploy").read_text(encoding="utf-8")
-    assert "# FTP_CPU_CORES=0.25" in deploy_text
-    assert "# FTP_MEMORY_GB=0.5" in deploy_text
+    assert "FTP_CPU_CORES=0.25" in deploy_text
+    assert "FTP_MEMORY_GB=0.5" in deploy_text
+    assert not (tmp_path / ".env.deploy.full").exists()

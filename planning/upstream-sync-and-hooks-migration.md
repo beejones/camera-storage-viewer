@@ -6,7 +6,7 @@ Inputs:
 - Upstream PR (hooks): https://github.com/beejones/protected-azure-container/pull/10
 - Current downstream overlay deploy entrypoint: `scripts/deploy/csv_deploy_container.py`
 - Current downstream YAML helpers: `scripts/deploy/csv_deploy_yaml_helpers.py`
-- Current CI deploy entrypoint: `.github/workflows/deploy.yml` runs `python scripts/deploy/csv_deploy_container.py --service full ...`
+- Current CI deploy entrypoint: `.github/workflows/deploy.yml` runs `python scripts/deploy/csv_deploy_container.py ...` (defaults to `--service full`).
 
 ## Phase 0 — Preconditions / decision points
 1) **When to sync**

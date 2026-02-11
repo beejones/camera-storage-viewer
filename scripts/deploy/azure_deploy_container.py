@@ -44,6 +44,61 @@ kv_secret_get = _DEFAULT
 kv_secret_set = _DEFAULT
 
 
+def _ensure_infra_quota_scoped_to_data_share(
+    *,
+    resource_group: str,
+    location: str,
+    container_name: str,
+    identity_name: str,
+    keyvault_name: str,
+    storage_name: str,
+    shares: list[str],
+    file_share_quota_gb: int = 5,
+) -> None:
+    """Ensure infra but only apply `file_share_quota_gb` to the FTP data share.
+
+    Upstream deploy engine uses AZURE_FILE_SHARE_QUOTA_GB for *all* file shares
+    it ensures (workspace/caddy). For camera-storage-viewer we want that env var
+    to only control the durable /data share quota (i.e. <container>-data).
+    """
+
+    import azure_deploy_container_helpers as helpers  # type: ignore
+
+    helpers.run_az_command(["account", "show", "--output", "none"], capture_output=False)
+
+    helpers.ensure_resource_group(resource_group=resource_group, location=location)
+
+    identity = helpers.ensure_managed_identity(name=identity_name, resource_group=resource_group)
+    storage = helpers.ensure_storage_account(name=storage_name, resource_group=resource_group, location=location)
+    kv = helpers.ensure_key_vault(name=keyvault_name, resource_group=resource_group, location=location)
+
+    subscription_id = str(
+        helpers.run_az_command(["account", "show", "--query", "id", "-o", "tsv"], capture_output=True)
+    ).strip()
+
+    identity_object_id = str(identity.get("principalId") or "").strip()
+    if not identity_object_id:
+        raise RuntimeError("Managed identity missing principalId")
+
+    helpers.ensure_role_assignments(
+        subscription_id=subscription_id,
+        resource_group=resource_group,
+        identity_object_id=identity_object_id,
+        keyvault_name=str(kv.get("name") or keyvault_name),
+        storage_account_name=str(storage.get("name") or storage_name),
+    )
+
+    data_share_default = f"{container_name}-data"
+    for share in shares:
+        quota_gb = file_share_quota_gb if share == data_share_default else 5
+        helpers.ensure_file_share_exists(
+            account_name=storage_name,
+            share_name=share,
+            resource_group=resource_group,
+            quota_gb=quota_gb,
+        )
+
+
 def generate_deploy_yaml(
     *,
     name: str,
@@ -190,9 +245,10 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         sys.modules["env_schema"] = module
         spec.loader.exec_module(module)
 
-        # Downstream extension: camera-storage-viewer keeps additional runtime
-        # secrets (FTP_* credentials) in `.env.secrets`. Upstream strict validation
-        # rejects unknown keys, so we extend SECRETS_SCHEMA at runtime.
+        # Downstream extension: camera-storage-viewer has additional runtime/deploy
+        # keys. Instead of rewriting `.env`/`.env.deploy` (and creating `*.full`
+        # copies), extend the upstream schema at runtime so strict validation
+        # accepts viewer-specific keys.
         try:
             env_schema = module
 
@@ -200,32 +256,82 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
                 def __init__(self, value: str) -> None:
                     self.value = value
 
-            extra_secret_keys = [
-                "FTP_USERS_JSON",
-                "FTP_CAMERA_ID",
-                "FTP_USERNAME",
-                "FTP_PASSWORD",
-            ]
-            existing = {spec.key.value for spec in getattr(env_schema, "SECRETS_SCHEMA", ())}
-            extra_specs = []
-            for k in extra_secret_keys:
-                if k in existing:
-                    continue
-                extra_specs.append(
-                    env_schema.EnvKeySpec(
-                        key=_RawKey(k),
-                        mandatory=False,
-                        default=None,
-                        targets=frozenset({env_schema.EnvTarget.DOTENV_SECRETS}),
+            def _extend_schema(*, attr: str, keys: set[str], target) -> None:
+                schema = tuple(getattr(env_schema, attr, ()) or ())
+                existing = {spec.key.value for spec in schema}
+                extra_specs = []
+                for k in sorted(keys):
+                    if k in existing:
+                        continue
+                    extra_specs.append(
+                        env_schema.EnvKeySpec(
+                            key=_RawKey(k),
+                            mandatory=False,
+                            default=None,
+                            targets=frozenset({target}),
+                        )
                     )
-                )
-            if extra_specs:
-                env_schema.SECRETS_SCHEMA = tuple(env_schema.SECRETS_SCHEMA) + tuple(extra_specs)
+                if extra_specs:
+                    setattr(env_schema, attr, schema + tuple(extra_specs))
+
+            # Load this repo's schema (under a unique name) to derive the
+            # camera-storage-viewer key set.
+            local_schema_path = (repo_root / "scripts" / "deploy" / "env_schema.py").resolve()
+            local_spec = importlib.util.spec_from_file_location("_csv_local_env_schema", local_schema_path)
+            local_module = None
+            if local_spec and local_spec.loader and local_schema_path.exists():
+                local_module = importlib.util.module_from_spec(local_spec)
+                local_spec.loader.exec_module(local_module)
+
+            runtime_var_keys: set[str] = set()
+            deploy_var_keys: set[str] = set()
+            runtime_secret_keys: set[str] = set()
+
+            if local_module is not None:
+                # Runtime vars: allow everything this repo considers a runtime var.
+                for spec_item in getattr(local_module, "RUNTIME_SCHEMA", ()) or ():
+                    key = getattr(spec_item, "key", None)
+                    if key is None:
+                        continue
+                    if isinstance(key, getattr(local_module, "VarsEnum")):
+                        runtime_var_keys.add(str(key.value))
+                    elif isinstance(key, getattr(local_module, "SecretsEnum")):
+                        # Treat local runtime secrets as `.env.secrets` keys upstream.
+                        runtime_secret_keys.add(str(key.value))
+
+                # Deploy vars: allow everything this repo considers a deploy var.
+                for spec_item in getattr(local_module, "DEPLOY_SCHEMA", ()) or ():
+                    key = getattr(spec_item, "key", None)
+                    if key is None:
+                        continue
+                    if isinstance(key, getattr(local_module, "VarsEnum")):
+                        deploy_var_keys.add(str(key.value))
+
+            # Ensure any compose-referenced runtime env vars are allowed, even if
+            # they are not part of the schema (compose is the source of truth).
+            runtime_var_keys.add("AZURE_KEYVAULT_URI")
+
+            # Avoid misclassifying deploy-only secrets (e.g. GHCR_TOKEN) as runtime secrets.
+            runtime_secret_keys = {
+                k
+                for k in runtime_secret_keys
+                if k.startswith("FTP_") or k in {"BASIC_AUTH_HASH", "APP_SECRET"}
+            }
+
+            _extend_schema(attr="RUNTIME_SCHEMA", keys=runtime_var_keys, target=env_schema.EnvTarget.DOTENV_RUNTIME)
+            _extend_schema(attr="DEPLOY_SCHEMA", keys=deploy_var_keys, target=env_schema.EnvTarget.DOTENV_DEPLOY)
+            _extend_schema(attr="SECRETS_SCHEMA", keys=runtime_secret_keys, target=env_schema.EnvTarget.DOTENV_SECRETS)
         except Exception:
             # Best-effort; if upstream schema shape changes, we fall back to hooks.
             pass
 
     argv_list = list(argv if argv is not None else sys.argv[1:])
+
+    # Default behavior: only use AZURE_FILE_SHARE_QUOTA_GB for the durable data share
+    # (<container>-data). Avoid resizing upstream workspace/caddy shares.
+    global ensure_infra
+    if ensure_infra is _DEFAULT:
+        ensure_infra = _ensure_infra_quota_scoped_to_data_share
 
     # This repo's Dockerfile lives at docker/Dockerfile. The upstream engine defaults
     # to `Dockerfile` in the context root unless --dockerfile is provided.
@@ -233,19 +339,6 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         candidate = engine_repo_root / "docker" / "Dockerfile"
         if candidate.exists():
             argv_list.extend(["--dockerfile", str(candidate)])
-
-    # Preserve full runtime env for upload while hooks slim .env for strict validation.
-    runtime_env_path = repo_root / ".env"
-    full_env_path = repo_root / ".env.full"
-    if runtime_env_path.exists() and not full_env_path.exists():
-        try:
-            full_env_path.write_text(runtime_env_path.read_text(encoding="utf-8"), encoding="utf-8")
-        except Exception:
-            # Best-effort; hooks will also attempt to create/restore.
-            pass
-
-    if runtime_env_path.exists() and not _argv_has_flag(argv_list, "--upload-env-file"):
-        argv_list.extend(["--upload-env-file", str(full_env_path)])
 
     # With upstream's secrets-split model (.env + .env.secrets), it is safe and
     # expected for `.env` to contain runtime (non-secret) config for the app.

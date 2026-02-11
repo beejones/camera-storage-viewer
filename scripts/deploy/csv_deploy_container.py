@@ -250,7 +250,8 @@ def main() -> None:
         choices=["ftp", "web", "web-caddy", "full"],
         default="full",
         help=(
-            "Which service to deploy. 'full' deploys both web-caddy (base name) and ftp (name suffixed with -ftp) as two container groups (default). "
+            "Which service to deploy. Default is 'full'. "
+            "'full' deploys both web-caddy (base name) and ftp (name suffixed with -ftp) as two container groups. "
             "'ftp' deploys the FTP-only container group. "
             "'web' deploys a web-only container group that exposes a single HTTP port (typically 80). "
             "'web-caddy' deploys web plus a Caddy sidecar exposing ports 80/443 for a custom domain. "
@@ -915,7 +916,7 @@ def main() -> None:
     storage_key = get_storage_key(storage_name, rg)
     identity_id, identity_client_id, identity_tenant_id = get_identity_details(identity_name, rg)
 
-    service = str(args.service or "ftp").strip().lower()
+    service = str(args.service or "full").strip().lower()
 
     def wait_for_container_group_deleted(*, container_name: str) -> None:
         print(f"⏳ [deploy] Waiting for previous container '{container_name}' to be fully deleted...")
@@ -978,6 +979,18 @@ def main() -> None:
         if args.memory is not None
         else (os.getenv(VarsEnum.APP_MEMORY_GB.value) or str(DEFAULT_APP_MEMORY_GB))
     )
+
+    def _float_env_or_default(env_name: str, default: float) -> float:
+        raw = (os.getenv(env_name) or "").strip()
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            raise SystemExit(f"Invalid {env_name}={raw!r}. Must be a number.")
+
+    ftp_cpu_cores = _float_env_or_default(VarsEnum.FTP_CPU_CORES.value, cpu_cores)
+    ftp_memory_gb = _float_env_or_default(VarsEnum.FTP_MEMORY_GB.value, memory_gb)
 
     repo_root = Path(__file__).resolve().parents[2]
     compose_path = Path(args.compose_file) if args.compose_file else (repo_root / "docker-compose.yml")
@@ -1159,8 +1172,8 @@ def main() -> None:
                 storage_key=storage_key,
                 kv_name=kv_name,
                 dns_label=ftp_dns_label,
-                cpu_cores=cpu_cores,
-                memory_gb=memory_gb,
+                cpu_cores=ftp_cpu_cores,
+                memory_gb=ftp_memory_gb,
                 data_share_name=data_share_name,
                 ftp_port=ftp_port,
                 ftp_passive_port_min=ftp_passive_port_min,
@@ -1241,8 +1254,8 @@ def main() -> None:
                 storage_key=storage_key,
                 kv_name=kv_name,
                 dns_label=dns_label,
-                cpu_cores=cpu_cores,
-                memory_gb=memory_gb,
+                cpu_cores=ftp_cpu_cores,
+                memory_gb=ftp_memory_gb,
                 data_share_name=data_share_name,
                 ftp_port=ftp_port,
                 ftp_passive_port_min=ftp_passive_port_min,

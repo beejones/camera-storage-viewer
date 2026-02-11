@@ -49,7 +49,6 @@ Example:
 
 ```bash
 python scripts/deploy/csv_deploy_container.py \
-  --service full \
   --env-file .env.deploy \
   --hooks-module ./my_hooks.py
 ```
@@ -58,7 +57,7 @@ Or via env var:
 
 ```bash
 export DEPLOY_HOOKS_MODULE=./my_hooks.py
-python scripts/deploy/csv_deploy_container.py --service full --env-file .env.deploy
+python scripts/deploy/csv_deploy_container.py --env-file .env.deploy
 ```
 
 ## Hook interface
