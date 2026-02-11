@@ -218,6 +218,8 @@ html, body {
   align-items: center;
   gap: 14px;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .timelineScaleSelect {
@@ -246,7 +248,14 @@ html, body {
 }
 
 .timelineZoom__input {
-  width: 160px;
+  width: min(160px, 42vw);
+}
+
+.timeline__hint {
+  min-width: 220px;
+  max-width: 100%;
+  flex: 1 1 260px;
+  text-align: right;
 }
 
 .timelineScroll {
