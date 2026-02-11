@@ -277,10 +277,14 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             # Load this repo's schema (under a unique name) to derive the
             # camera-storage-viewer key set.
             local_schema_path = (repo_root / "scripts" / "deploy" / "env_schema.py").resolve()
-            local_spec = importlib.util.spec_from_file_location("_csv_local_env_schema", local_schema_path)
+            local_module_name = "_csv_local_env_schema"
+            local_spec = importlib.util.spec_from_file_location(local_module_name, local_schema_path)
             local_module = None
             if local_spec and local_spec.loader and local_schema_path.exists():
                 local_module = importlib.util.module_from_spec(local_spec)
+                # Python 3.12 dataclasses can consult sys.modules during class
+                # creation; ensure the module is present while executing.
+                sys.modules[local_module_name] = local_module
                 local_spec.loader.exec_module(local_module)
 
             runtime_var_keys: set[str] = set()
