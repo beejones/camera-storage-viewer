@@ -252,7 +252,7 @@ html, body {
 }
 
 .timeline__hint {
-  min-width: 220px;
+  min-width: 0;
   max-width: 100%;
   flex: 1 1 260px;
   text-align: right;
