@@ -14,6 +14,7 @@ It also cooperates with this repo's deploy hooks at:
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import time as time
 from pathlib import Path
@@ -88,8 +89,12 @@ def _ensure_infra_quota_scoped_to_data_share(
         storage_account_name=str(storage.get("name") or storage_name),
     )
 
+    # Upstream currently only passes workspace + caddy shares here. This repo
+    # also needs a durable data share for /data (FTP uploads + viewer DB).
     data_share_default = f"{container_name}-data"
-    for share in shares:
+    shares_to_ensure = list(dict.fromkeys([*shares, data_share_default]))
+
+    for share in shares_to_ensure:
         quota_gb = file_share_quota_gb if share == data_share_default else 5
         helpers.ensure_file_share_exists(
             account_name=storage_name,
@@ -97,6 +102,20 @@ def _ensure_infra_quota_scoped_to_data_share(
             resource_group=resource_group,
             quota_gb=quota_gb,
         )
+
+
+def _argv_get_value(argv: list[str], flag: str) -> str | None:
+    """Return the value for `--flag value` or `--flag=value` if present."""
+    for i, a in enumerate(argv):
+        if a == flag:
+            if i + 1 < len(argv):
+                v = str(argv[i + 1]).strip()
+                return v or None
+            return None
+        if a.startswith(flag + "="):
+            v = str(a.split("=", 1)[1]).strip()
+            return v or None
+    return None
 
 
 def generate_deploy_yaml(
@@ -330,6 +349,20 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             pass
 
     argv_list = list(argv if argv is not None else sys.argv[1:])
+
+    # camera-storage-viewer requires durable storage at /data for both the web
+    # container group and the FTP container group created by hooks.
+    #
+    # Upstream defaults to reusing the workspace share for /data. Override that
+    # default so /data maps to <container>-data unless the user explicitly
+    # supplies --data-share-name.
+    if not _argv_has_flag(argv_list, "--data-share-name"):
+        container_name = (
+            _argv_get_value(argv_list, "--container-name")
+            or (os.getenv("AZURE_CONTAINER_NAME") or "").strip()
+            or "protected-azure-container"
+        )
+        argv_list.extend(["--data-share-name", f"{container_name}-data"])
 
     # Default behavior: only use AZURE_FILE_SHARE_QUOTA_GB for the durable data share
     # (<container>-data). Avoid resizing upstream workspace/caddy shares.
