@@ -276,7 +276,6 @@ jobs:
         # Use --no-set-vars-secrets because we are already running in Actions
         # Use --no-publish because we already built and pushed above
         python scripts/deploy/csv_deploy_container.py \
-          --service full \
           --no-interactive \
           --no-set-vars-secrets \
           --no-publish \

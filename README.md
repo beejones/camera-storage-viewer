@@ -106,16 +106,19 @@ Prototype (this step): an **FTP server** you can point one or more cameras at (s
 
 ## Quick Start (Local FTP Prototype)
 
-1) Create `.env`:
+1) Create `.env` and `.env.secrets`:
 
 ```bash
 cp env.example .env
+cp env.secrets.example .env.secrets
 ```
 
-2) Set the required values in `.env`:
-- FTP users (choose one):
+2) Set the required values:
+- FTP users (choose one) in `.env.secrets`:
 	- single camera: `FTP_USERNAME`, `FTP_PASSWORD`, `FTP_CAMERA_ID`
 	- multi-camera: `FTP_USERS_JSON`
+
+- If you run behind Caddy Basic Auth, set `BASIC_AUTH_HASH` in `.env.secrets`.
 
 3) Start containers:
 

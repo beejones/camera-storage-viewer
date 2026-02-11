@@ -1,5 +1,6 @@
 # Agent Instructions
-
+## Security
+- **Never** read .env.secrets nor .env.deploy.secrets
 ## Environment
 - **Always** activate the virtual environment before running Python scripts:
   ```bash
