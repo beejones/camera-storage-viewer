@@ -89,6 +89,30 @@ EOF
     printf "%s" "${SECRET_VALUE}" > "${ENV_OUT_PATH}"
     chmod 600 "${ENV_OUT_PATH}" || true
     echo "[azure_start] Successfully wrote runtime env to ${ENV_OUT_PATH}"
+
+    # Also fetch runtime secrets (.env.secrets content) if uploaded as a separate KV secret.
+    # FTP credentials (FTP_PASSWORD, FTP_USERS_JSON) live in .env.secrets and are uploaded
+    # to Key Vault as the 'env-secrets' secret by the deploy engine.
+    SECRETS_SECRET_NAME="${AZURE_SECRETS_SECRET_NAME:-env-secrets}"
+    SECRETS_URL="${VAULT_URL}/secrets/${SECRETS_SECRET_NAME}?api-version=7.4"
+
+    SECRETS_JSON="$(curl -sS --noproxy '*' \
+      --connect-timeout 2 --max-time 10 \
+      --retry 3 --retry-all-errors --retry-delay 1 \
+      -H "Authorization: Bearer ${ACCESS_TOKEN}" "${SECRETS_URL}" 2>&1)" || true
+
+    SECRETS_VALUE="$(python -c 'import json,sys; print(json.loads(sys.stdin.read()).get("value",""))' <<EOF
+${SECRETS_JSON}
+EOF
+)" 2>/dev/null || true
+
+    if [ -n "${SECRETS_VALUE}" ]; then
+        # Append secrets to the runtime env file so load_ftp_config() sees all values.
+        printf "\n%s" "${SECRETS_VALUE}" >> "${ENV_OUT_PATH}"
+        echo "[azure_start] Successfully appended runtime secrets (${SECRETS_SECRET_NAME}) to ${ENV_OUT_PATH}"
+    else
+        echo "[azure_start] No runtime secrets found (${SECRETS_SECRET_NAME}), continuing without"
+    fi
 else
     echo "[azure_start] No AZURE_KEYVAULT_URI set; skipping Key Vault fetch"
 fi
