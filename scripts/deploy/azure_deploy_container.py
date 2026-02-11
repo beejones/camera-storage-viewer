@@ -19,6 +19,7 @@ import sys
 import time as time
 from pathlib import Path
 
+
 try:
     from scripts.deploy import docker_compose_helpers as compose_helpers  # type: ignore
 except ImportError:
@@ -208,6 +209,51 @@ def _argv_has_flag(argv: list[str], flag: str) -> bool:
     return flag in argv or any(a.startswith(flag + "=") for a in argv)
 
 
+def _dotenv_get(*, path: Path, key: str) -> str | None:
+    """Best-effort dotenv parser for KEY=VALUE lines.
+
+    Only supports simple assignments (no multiline). Intended for reading a
+    couple of deploy-time values (e.g. AZURE_CONTAINER_NAME) before the upstream
+    engine loads .env.deploy.
+    """
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        if k.strip() != key:
+            continue
+        val = v.strip()
+        if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
+            val = val[1:-1]
+        return val.strip() or None
+
+    return None
+
+
+def _argv_find_env_file(argv: list[str], *, repo_root: Path) -> Path | None:
+    env_path = _argv_get_value(argv, "--env-file")
+    if env_path:
+        p = Path(env_path).expanduser()
+        if not p.is_absolute():
+            p = (repo_root / p).resolve()
+        return p
+
+    # Upstream default
+    candidate = (repo_root / ".env.deploy").resolve()
+    return candidate if candidate.exists() else None
+
+
 def _propagate_test_overrides(*, upstream_engine) -> None:
     # Compose/time are patched as objects/modules, not sentinels.
     upstream_engine.compose_helpers = compose_helpers
@@ -357,12 +403,18 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     # default so /data maps to <container>-data unless the user explicitly
     # supplies --data-share-name.
     if not _argv_has_flag(argv_list, "--data-share-name"):
-        container_name = (
-            _argv_get_value(argv_list, "--container-name")
-            or (os.getenv("AZURE_CONTAINER_NAME") or "").strip()
-            or "protected-azure-container"
-        )
-        argv_list.extend(["--data-share-name", f"{container_name}-data"])
+        env_file = _argv_find_env_file(argv_list, repo_root=repo_root)
+        container_name = _argv_get_value(argv_list, "--container-name")
+        if not container_name and env_file is not None:
+            container_name = _dotenv_get(path=env_file, key="AZURE_CONTAINER_NAME")
+        container_name = (container_name or (os.getenv("AZURE_CONTAINER_NAME") or "").strip() or "protected-azure-container").strip()
+
+        data_share_name = None
+        if env_file is not None:
+            data_share_name = _dotenv_get(path=env_file, key="AZURE_DATA_SHARE_NAME")
+        data_share_name = (data_share_name or f"{container_name}-data").strip()
+
+        argv_list.extend(["--data-share-name", data_share_name])
 
     # Default behavior: only use AZURE_FILE_SHARE_QUOTA_GB for the durable data share
     # (<container>-data). Avoid resizing upstream workspace/caddy shares.
