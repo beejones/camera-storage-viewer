@@ -403,11 +403,20 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     # default so /data maps to <container>-data unless the user explicitly
     # supplies --data-share-name.
     if not _argv_has_flag(argv_list, "--data-share-name"):
+        # Avoid string-literal os.getenv('...') access (tests enforce env_schema usage)
+        try:
+            from env_schema import VarsEnum  # type: ignore
+        except Exception:  # pragma: no cover
+            VarsEnum = None  # type: ignore
+
         env_file = _argv_find_env_file(argv_list, repo_root=repo_root)
         container_name = _argv_get_value(argv_list, "--container-name")
         if not container_name and env_file is not None:
             container_name = _dotenv_get(path=env_file, key="AZURE_CONTAINER_NAME")
-        container_name = (container_name or (os.getenv("AZURE_CONTAINER_NAME") or "").strip() or "protected-azure-container").strip()
+        env_container_name = ""
+        if VarsEnum is not None:
+            env_container_name = str(os.getenv(VarsEnum.AZURE_CONTAINER_NAME.value) or "").strip()
+        container_name = (container_name or env_container_name or "protected-azure-container").strip()
 
         data_share_name = None
         if env_file is not None:
