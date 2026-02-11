@@ -14,9 +14,11 @@ It also cooperates with this repo's deploy hooks at:
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import time as time
 from pathlib import Path
+
 
 try:
     from scripts.deploy import docker_compose_helpers as compose_helpers  # type: ignore
@@ -88,8 +90,12 @@ def _ensure_infra_quota_scoped_to_data_share(
         storage_account_name=str(storage.get("name") or storage_name),
     )
 
+    # Upstream currently only passes workspace + caddy shares here. This repo
+    # also needs a durable data share for /data (FTP uploads + viewer DB).
     data_share_default = f"{container_name}-data"
-    for share in shares:
+    shares_to_ensure = list(dict.fromkeys([*shares, data_share_default]))
+
+    for share in shares_to_ensure:
         quota_gb = file_share_quota_gb if share == data_share_default else 5
         helpers.ensure_file_share_exists(
             account_name=storage_name,
@@ -97,6 +103,20 @@ def _ensure_infra_quota_scoped_to_data_share(
             resource_group=resource_group,
             quota_gb=quota_gb,
         )
+
+
+def _argv_get_value(argv: list[str], flag: str) -> str | None:
+    """Return the value for `--flag value` or `--flag=value` if present."""
+    for i, a in enumerate(argv):
+        if a == flag:
+            if i + 1 < len(argv):
+                v = str(argv[i + 1]).strip()
+                return v or None
+            return None
+        if a.startswith(flag + "="):
+            v = str(a.split("=", 1)[1]).strip()
+            return v or None
+    return None
 
 
 def generate_deploy_yaml(
@@ -187,6 +207,51 @@ def generate_deploy_yaml(
 
 def _argv_has_flag(argv: list[str], flag: str) -> bool:
     return flag in argv or any(a.startswith(flag + "=") for a in argv)
+
+
+def _dotenv_get(*, path: Path, key: str) -> str | None:
+    """Best-effort dotenv parser for KEY=VALUE lines.
+
+    Only supports simple assignments (no multiline). Intended for reading a
+    couple of deploy-time values (e.g. AZURE_CONTAINER_NAME) before the upstream
+    engine loads .env.deploy.
+    """
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        if k.strip() != key:
+            continue
+        val = v.strip()
+        if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
+            val = val[1:-1]
+        return val.strip() or None
+
+    return None
+
+
+def _argv_find_env_file(argv: list[str], *, repo_root: Path) -> Path | None:
+    env_path = _argv_get_value(argv, "--env-file")
+    if env_path:
+        p = Path(env_path).expanduser()
+        if not p.is_absolute():
+            p = (repo_root / p).resolve()
+        return p
+
+    # Upstream default
+    candidate = (repo_root / ".env.deploy").resolve()
+    return candidate if candidate.exists() else None
 
 
 def _propagate_test_overrides(*, upstream_engine) -> None:
@@ -330,6 +395,35 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             pass
 
     argv_list = list(argv if argv is not None else sys.argv[1:])
+
+    # camera-storage-viewer requires durable storage at /data for both the web
+    # container group and the FTP container group created by hooks.
+    #
+    # Upstream defaults to reusing the workspace share for /data. Override that
+    # default so /data maps to <container>-data unless the user explicitly
+    # supplies --data-share-name.
+    if not _argv_has_flag(argv_list, "--data-share-name"):
+        # Avoid string-literal os.getenv('...') access (tests enforce env_schema usage)
+        try:
+            from env_schema import VarsEnum  # type: ignore
+        except Exception:  # pragma: no cover
+            VarsEnum = None  # type: ignore
+
+        env_file = _argv_find_env_file(argv_list, repo_root=repo_root)
+        container_name = _argv_get_value(argv_list, "--container-name")
+        if not container_name and env_file is not None:
+            container_name = _dotenv_get(path=env_file, key="AZURE_CONTAINER_NAME")
+        env_container_name = ""
+        if VarsEnum is not None:
+            env_container_name = str(os.getenv(VarsEnum.AZURE_CONTAINER_NAME.value) or "").strip()
+        container_name = (container_name or env_container_name or "protected-azure-container").strip()
+
+        data_share_name = None
+        if env_file is not None:
+            data_share_name = _dotenv_get(path=env_file, key="AZURE_DATA_SHARE_NAME")
+        data_share_name = (data_share_name or f"{container_name}-data").strip()
+
+        argv_list.extend(["--data-share-name", data_share_name])
 
     # Default behavior: only use AZURE_FILE_SHARE_QUOTA_GB for the durable data share
     # (<container>-data). Avoid resizing upstream workspace/caddy shares.

@@ -242,6 +242,36 @@ Important: Azure Container Instances limits a container group to **5 public port
 If PASV uploads fail in Azure, you usually need to set:
 - `FTP_PUBLIC_HOST` to your public DNS name or IP (so PASV replies contain a reachable address)
 
+## Azure Files shares (ACI persistent storage)
+
+The Azure deployment uses **Azure Files shares** for persistent storage (mounted into Azure Container Instances). These shares live inside the storage account created/managed by the deploy script.
+
+Default share names are based on `AZURE_CONTAINER_NAME` (or `--container-name`):
+
+- `(<container>)-data`
+	- Purpose: **durable application data** (FTP uploads, viewer index/DB, thumbnails, etc)
+	- Mounted at: `/data` (web container group and the separate FTP container group)
+	- Quota: controlled by `AZURE_FILE_SHARE_QUOTA_GB` (this is the one you typically want to set to e.g. `100`)
+
+- `(<container>)-workspace`
+	- Purpose: upstream deploy-engine “workspace” volume (not used for camera uploads)
+	- Mounted at: `/home/coder/workspace`
+	- Quota: kept at **5 GiB** by default
+
+- `(<container>)-caddy-data`
+	- Purpose: Caddy runtime data (ACME state/certs)
+	- Mounted at: `/data` in the Caddy sidecar
+	- Quota: kept at **5 GiB** by default
+
+- `(<container>)-caddy-config`
+	- Purpose: Caddy config state
+	- Mounted at: `/config` in the Caddy sidecar
+	- Quota: kept at **5 GiB** by default
+
+Notes:
+- You can override the `/data` share name via `--data-share-name` (CLI) or `AZURE_DATA_SHARE_NAME` (in `.env.deploy`).
+- `AZURE_FILE_SHARE_QUOTA_GB` is intentionally applied only to the durable `(<container>)-data` share so resizing does not affect workspace/caddy shares.
+
 ## Azure Storage Cleanup
 
 If you need to delete old uploads stored in Azure (the Azure Files share mounted at `/data` in ACI), use:

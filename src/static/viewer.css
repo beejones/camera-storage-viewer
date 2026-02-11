@@ -25,6 +25,9 @@ html, body {
   display: grid;
   grid-template-columns: 320px 1fr;
   height: 100vh;
+  /* Prefer dynamic viewport units on mobile/desktop UI chrome.
+     Keep 100vh as a fallback for older browsers. */
+  height: 100dvh;
 }
 
 .sidebar {
@@ -130,9 +133,11 @@ html, body {
 
 .main {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   padding: 16px;
   gap: 14px;
+  min-height: 0;
+  min-width: 0;
 }
 
 .main__header {
@@ -163,14 +168,19 @@ html, body {
   border-radius: 16px;
   overflow: hidden;
   background: rgba(0,0,0,0.25);
+  min-height: 0;
+  display: flex;
+  min-width: 0;
 }
 
 .player {
   width: 100%;
   height: 100%;
-  min-height: 300px;
-  max-height: 60vh;
+  flex: 1 1 auto;
+  min-height: 0;
   background: #000;
+  display: block;
+  object-fit: contain;
 }
 
 .emptyState {
@@ -190,6 +200,7 @@ html, body {
   border-radius: 16px;
   padding: 12px 14px;
   background: rgba(255,255,255,0.03);
+  min-width: 0;
 }
 
 .timeline__header {
@@ -207,6 +218,8 @@ html, body {
   align-items: center;
   gap: 14px;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .timelineScaleSelect {
@@ -235,13 +248,21 @@ html, body {
 }
 
 .timelineZoom__input {
-  width: 160px;
+  width: min(160px, 42vw);
+}
+
+.timeline__hint {
+  min-width: 220px;
+  max-width: 100%;
+  flex: 1 1 260px;
+  text-align: right;
 }
 
 .timelineScroll {
   overflow-x: auto;
   overflow-y: hidden;
   padding-bottom: 6px;
+  min-width: 0;
 }
 
 .timelineInner {
