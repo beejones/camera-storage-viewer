@@ -1,32 +1,49 @@
 # Agent Instructions
-## Security
-- **Never** read .env.secrets nor .env.deploy.secrets
-## Environment
-- **Always** activate the virtual environment before running Python scripts:
+
+## 1. Critical Rules (Must Follow)
+- **Security**: **NEVER** read `.env.secrets` or `.env.deploy.secrets`.
+- **Environment**: **ALWAYS** run scripts within the virtual environment.
   ```bash
   source .venv/bin/activate && python <script>
   ```
-## Start server
-- **Always** start the server with the following command. This command will generate logs/app.log and the terminal shows the logs which is better for debugging. Try to start/restart the server in the same terminal:
+- **Server Startup**: Use the dedicated startup command to ensure proper logging.
   ```bash
-  source .venv/bin/activate && python server.py
+  source .venv/bin/activate && python run.py
   ```
-## File Organization
-- **Debug Scripts**: All debug and verification scripts must be created in the `debug/` directory, not the root directory.
-- **Common Code**: All common code must be created in the `src/common/` directory.
-- **Temporary files**: All temporary files must be created in the `out/` directory.
-- **Logs**: All logs must be created in the `logs/` directory.
 
-## Preferences
-- **CSV Exports**: Use semicolon (`;`) delimiter and comma (`,`) for decimals to ensure Excel compatibility/localization.
-- **PRs**: Return the report as a raw markdown file.
+## 2. Development Standards
+### Code Quality
+- **Style**: Follow **PEP 8**. Use **f-strings** for formatting.
+- **Logging**: Use `logging` module at `DEBUG` level. Use prefixes: `[STORE]:`, `[COLLECTOR]:`, `[TRADER]:`.
+- **Error Handling**: Use `try-except` blocks. Fail gracefully; avoid complex fallback mechanisms unless strictly necessary for reliability.
+- **Bugs**: If bugs like uncaught exceptions are reported, we need to automatically add a test (pytest or UI) to make sure the error does not occur again.
+- **Arguments**: Avoid optional arguments (`arg=None`) unless strictly necessary to prevent ambiguity/bugs. Use dict only when necessary. Prioritize using data classes
+- **Cleanup**: Delete obsolete code immediately.
+- **Permissions**: You have permission to run tests without asking.
 
-## Software engineering
-- **Logging**: Use Python's logging module to log messages. The logging level should be set to DEBUG. Log files should be stored in the `logs/` directory. We use PREFIX: such as [STORE]:, [COLLECTOR]:, etc to categorize our logging.
-- **Error Handling**: Use try-except blocks to handle errors.
-- **Code Style**: Use PEP 8 style guide for Python code. String formatting should be done using f-strings.
-- Use as much as possible shared code from the `src/` directory. We always delete obsolete code.
+# Project Context
 
-## Testing
-- **Unit Tests**: Write unit tests for all functions and classes. We use tests/pytests for all pytests, debug/ for debug scripts, tests/UI for ui testing.
-- **Permissions**: Don't ask for permissions to run tests.
+## 1. Project Overview
+**Stock Dashboard** is a Python web application for tracking and analyzing stock/crypto market data.
+- **Backend**: Flask + Socket.IO (threaded mode).
+- **Frontend**: HTML templates + Static Assets (JS/CSS).
+- **Core Functionality**: Real-time market data collection, technical analysis (indicators), and trading strategy execution.
+
+## 2. File Organization
+- `src/common/`: Shared utilities and core logic. **Reuse code from here whenever possible.**
+- `debug/`: Verification and one-off scripts. **Do NOT pollute the root directory.**
+- `out/`: Temporary output files including PR reviews and test reports.
+- `logs/`: Application logs (`logs/app.log`).
+- `tests/pytests/`: Unit and integration tests.
+- `tests/UI/`: UI tests using playwright
+- `planning/`: Planning files. Planning file must have a checkable task overview and clear phase exit criteria. The first phase in a plan should always be optimizing the module we are going to change. See (`docs/CODE_PROMPTS.md`) section ## cleanup. Also check if docs must be merged or are obsolete.
+- `docs/`: Documentation. Each major topic should have a doc. 
+
+## 3. Workflows & Preferences
+### User Preferences
+- **CSV Exports**: Use semicolon (`;`) delimiter and comma (`,`) for decimals (Excel-friendly).
+- **PR Reviews**: Return reports as raw markdown files (e.g., `Review.md`).
+
+### Testing Context
+- **Tooling**: We use `pytest` for backend tests.
+- **Philosophy**: Tests are encouraged for all new logic.
