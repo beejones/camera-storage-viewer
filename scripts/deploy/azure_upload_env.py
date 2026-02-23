@@ -2,7 +2,7 @@
 """Upload a local .env file to Azure Key Vault.
 
 Stores the entire .env file content as a single Key Vault secret (default name: 'env').
-This matches the camera-storage-viewer ACI startup flow in scripts/azure_start.py.
+This matches the protected-container ACI startup flow in scripts/azure_start.py.
 
 Prereqs:
 - az login

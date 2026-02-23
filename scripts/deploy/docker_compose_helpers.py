@@ -38,12 +38,16 @@ def interpolate_dict(data: Any) -> Any:
 
 def load_docker_compose_config(cwd: Path) -> Dict[str, Any]:
     """
-    Parses docker-compose.yml using PyYAML and interpolates variables.
+    Parses docker/docker-compose.yml using PyYAML and interpolates variables.
     Returns the parsed configuration dictionary.
     """
-    compose_path = cwd / "docker-compose.yml"
-    if not compose_path.exists():
-        raise FileNotFoundError(f"docker-compose.yml not found in {cwd}")
+
+    # Canonical location is docker/docker-compose.yml.
+    # We keep a fallback to repo-root docker-compose.yml for backwards compatibility.
+    candidates = [cwd / "docker" / "docker-compose.yml", cwd / "docker-compose.yml"]
+    compose_path = next((p for p in candidates if p.exists()), None)
+    if not compose_path:
+        raise FileNotFoundError(f"docker/docker-compose.yml not found in {cwd} (also checked repo-root docker-compose.yml)")
 
     try:
         with open(compose_path, "r") as f:
@@ -51,9 +55,14 @@ def load_docker_compose_config(cwd: Path) -> Dict[str, Any]:
         
         # Interpolate variables
         config = interpolate_dict(raw_config)
+        # Attach metadata so callers can resolve relative paths the same way docker compose does.
+        # (Compose resolves relative paths against the compose file's directory.)
+        if isinstance(config, dict):
+            config.setdefault("_compose_file", str(Path(compose_path).resolve()))
+            config.setdefault("_compose_dir", str(Path(compose_path).resolve().parent))
         return config
     except yaml.YAMLError as e:
-        raise RuntimeError(f"Failed to parse docker-compose.yml: {e}") from e
+        raise RuntimeError(f"Failed to parse docker/docker-compose.yml: {e}") from e
 
 def get_service_config(compose_config: Dict[str, Any], service_name: str) -> Dict[str, Any]:
     """Retrieve the configuration for a specific service."""
