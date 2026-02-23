@@ -3,7 +3,9 @@
 This repo intentionally uses a **strict, schema-driven** approach for all configuration keys used by:
 
 - runtime `.env` (uploaded to Key Vault as a single secret)
+- runtime `.env.secrets` (runtime secrets file)
 - deploy-time `.env.deploy`
+- deploy-time `.env.deploy.secrets`
 - GitHub Actions vars / secrets
 
 The schema is the single source of truth:
@@ -29,7 +31,9 @@ In code:
 Each key explicitly declares where it is expected to live via `EnvTarget`:
 
 - `DOTENV_RUNTIME` → repo root `.env`
+- `DOTENV_SECRETS` → repo root `.env.secrets`
 - `DOTENV_DEPLOY` → repo root `.env.deploy`
+- `DOTENV_DEPLOY_SECRETS` → repo root `.env.deploy.secrets`
 - `GH_ACTIONS_VAR` → GitHub Actions variable
 - `GH_ACTIONS_SECRET` → GitHub Actions secret
 - `KEYVAULT_SECRET` → Azure Key Vault secret name (rare; usually we upload full `.env` as one secret)
@@ -42,9 +46,10 @@ Each key has an `EnvKeySpec`:
 - `default`: optional default value
 - `targets`: where the value is expected/allowed
 
-There are two schemas:
+There are three schemas:
 
 - `RUNTIME_SCHEMA`: keys permitted in `.env`
+- `SECRETS_SCHEMA`: keys permitted in `.env.secrets`
 - `DEPLOY_SCHEMA`: keys permitted in `.env.deploy`
 
 ## Add a new deploy-time variable (example)
@@ -93,9 +98,9 @@ Example: add `MY_API_TOKEN` as a deploy-time secret synced to GitHub Actions sec
 
 2) Add to `DEPLOY_SCHEMA` with:
 
-- `targets={EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_SECRET}`
+- `targets={EnvTarget.DOTENV_DEPLOY_SECRETS, EnvTarget.GH_ACTIONS_SECRET}`
 
-3) Update [env.deploy.example](../env.deploy.example) (leave empty value)
+3) Update [env.deploy.secrets.example](../env.deploy.secrets.example) (leave empty value)
 
 4) Use it in code via the enum:
 
@@ -108,7 +113,9 @@ Example: add `MY_API_TOKEN` as a deploy-time secret synced to GitHub Actions sec
 Rule of thumb:
 
 - Put **app runtime config** in `.env` (things the container needs while running). This file is uploaded to Key Vault.
-- Put **deployment config** in `.env.deploy` (Azure resource settings, image ref, GHCR credentials, etc.). This file is not uploaded to Key Vault.
+- Put **runtime secrets** in `.env.secrets`.
+- Put **deployment config** in `.env.deploy` (Azure resource settings, image ref, non-secret switches).
+- Put **deployment secrets** in `.env.deploy.secrets` (GHCR/Portainer tokens). This file is not uploaded to Key Vault.
 
 ## GitHub Actions syncing
 

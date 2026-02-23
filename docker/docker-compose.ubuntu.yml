@@ -1,0 +1,12 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    entrypoint: ["/usr/local/bin/ubuntu_start.sh"]
+    command: ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+    environment:
+      ENV_DIR: ${ENV_DIR:-/opt/camera-storage-viewer}
+    volumes:
+      # Host-synced env directory (contains .env and optionally .env.secrets)
+      - ${ENV_DIR:-/opt/camera-storage-viewer}:${ENV_DIR:-/opt/camera-storage-viewer}:ro

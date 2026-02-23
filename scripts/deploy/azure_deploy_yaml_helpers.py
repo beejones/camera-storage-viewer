@@ -48,6 +48,7 @@ def generate_deploy_yaml(
     other_cpu_cores: float = 0.5,
     other_memory_gb: float = 0.5,
     restart_policy: str = "OnFailure",
+    include_caddy: bool = True,
 ) -> str:
     restart_policy_norm = str(restart_policy or "").strip() or "OnFailure"
     if restart_policy_norm not in {"Always", "OnFailure", "Never"}:
@@ -63,38 +64,40 @@ def generate_deploy_yaml(
     def indent(level: int, text: str) -> str:
         return " " * level + text
 
-    # Caddyfile generated inline
-    caddy_cmd = "\n".join(
-        [
-            "set -eu",
-            "mkdir -p /config/caddy",
-            "cat > /config/caddy/Caddyfile <<'CADDY'",
-            "{",
-            "  email {$ACME_EMAIL}",
-            "}",
-            "",
-            f"{public_domain} {{",
-            "  log",
-            "  encode zstd gzip",
-            '  header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"',
-            "",
-            "  # Single Basic Auth layer for all routes",
-            "  basic_auth /* {",
-            "    {$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}",
-            "  }",
-            "",
-            "  # Proxy to code-server",
-            f"  reverse_proxy http://127.0.0.1:{app_port} {{",
-            "    header_up Upgrade {http.request.header.Upgrade}",
-            "    header_up Connection {http.request.header.Connection}",
-            "  }",
-            "}",
-            "CADDY",
-            "",
-            "# Run Caddy with the mounted /data for certs",
-            "exec caddy run --config /config/caddy/Caddyfile --adapter caddyfile",
-        ]
-    )
+    caddy_cmd = ""
+    if include_caddy:
+        # Caddyfile generated inline
+        caddy_cmd = "\n".join(
+            [
+                "set -eu",
+                "mkdir -p /config/caddy",
+                "cat > /config/caddy/Caddyfile <<'CADDY'",
+                "{",
+                "  email {$ACME_EMAIL}",
+                "}",
+                "",
+                f"{public_domain} {{",
+                "  log",
+                "  encode zstd gzip",
+                '  header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"',
+                "",
+                "  # Single Basic Auth layer for all routes",
+                "  basic_auth /* {",
+                "    {$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}",
+                "  }",
+                "",
+                "  # Proxy to app",
+                f"  reverse_proxy http://127.0.0.1:{app_port} {{",
+                "    header_up Upgrade {http.request.header.Upgrade}",
+                "    header_up Connection {http.request.header.Connection}",
+                "  }",
+                "}",
+                "CADDY",
+                "",
+                "# Run Caddy with the mounted /data for certs",
+                "exec caddy run --config /config/caddy/Caddyfile --adapter caddyfile",
+            ]
+        )
 
     lines: list[str] = [
         "apiVersion: '2023-05-01'",
@@ -170,10 +173,10 @@ def generate_deploy_yaml(
         ]
 
     # NOTE: In ACI, setting `command:` overrides the image ENTRYPOINT.
-    # Our image ENTRYPOINT runs /usr/local/bin/azure_start.sh to fetch Key Vault
-    # runtime env and then exec the app process.
-    # When we set an explicit app command (e.g. from docker-compose), prefix it
-    # with azure_start.sh to preserve that behavior.
+    # Our Dockerfile ENTRYPOINT runs /usr/local/bin/azure_start.sh to fetch
+    # Key Vault secrets and then exec the app process. When the compose-driven
+    # deploy sets an explicit app command (e.g. uvicorn/python), we must prefix
+    # it with azure_start.sh to preserve that behavior.
     if app_command:
         effective_app_command = list(app_command)
         if effective_app_command[0] != "/usr/local/bin/azure_start.sh":
@@ -190,54 +193,58 @@ def generate_deploy_yaml(
         indent(12, "mountPath: /home/coder/workspace"),
     ]
 
-    # If the app expects durable storage under /data (e.g. camera-storage-viewer OUT_DIR),
-    # mount a share there as well.
+    # Optionally mount durable storage under /data for the app.
     if data_share_name:
         lines += [
             indent(10, "- name: data-volume"),
             indent(12, "mountPath: /data"),
         ]
 
-    lines += [
-        "",
-        indent(4, "- name: tls-proxy"),
-        indent(6, "properties:"),
-        indent(8, f"image: {caddy_image}"),
-        indent(8, "ports:"),
-        indent(10, "- port: 80"),
-        indent(12, "protocol: TCP"),
-        indent(10, "- port: 443"),
-        indent(12, "protocol: TCP"),
-        indent(8, "resources:"),
-        indent(10, "requests:"),
-        indent(12, f"cpu: {caddy_cpu_cores}"),
-        indent(12, f"memoryInGB: {tls_memory_gb}"),
-        indent(8, "environmentVariables:"),
-        indent(10, "- name: PUBLIC_DOMAIN"),
-        indent(12, f"value: '{public_domain}'"),
-        indent(10, "- name: ACME_EMAIL"),
-        indent(12, f"value: '{acme_email}'"),
-        indent(10, "- name: FALLBACK_DOMAIN"),
-        indent(12, f"value: '{dns_label}.{location}.azurecontainer.io'"),
-        indent(10, "- name: BASIC_AUTH_USER"),
-        indent(12, f"value: '{basic_auth_user}'"),
-        indent(10, "- name: BASIC_AUTH_HASH"),
-        indent(12, f"secureValue: '{basic_auth_hash}'"),
-        indent(8, "command:"),
-        indent(10, "- sh"),
-        indent(10, "- -lc"),
-        indent(10, "- |"),
-    ]
+    if include_caddy:
+        lines += [
+            "",
+            indent(4, "- name: tls-proxy"),
+            indent(6, "properties:"),
+            indent(8, f"image: {caddy_image}"),
+            indent(8, "ports:"),
+            indent(10, "- port: 80"),
+            indent(12, "protocol: TCP"),
+            indent(10, "- port: 443"),
+            indent(12, "protocol: TCP"),
+            indent(8, "resources:"),
+            indent(10, "requests:"),
+            indent(12, f"cpu: {caddy_cpu_cores}"),
+            indent(12, f"memoryInGB: {tls_memory_gb}"),
+            indent(8, "environmentVariables:"),
+            indent(10, "- name: PUBLIC_DOMAIN"),
+            indent(12, f"value: '{public_domain}'"),
+            indent(10, "- name: ACME_EMAIL"),
+            indent(12, f"value: '{acme_email}'"),
+            indent(10, "- name: FALLBACK_DOMAIN"),
+            indent(12, f"value: '{dns_label}.{location}.azurecontainer.io'"),
+            indent(10, "- name: BASIC_AUTH_USER"),
+            indent(12, f"value: '{basic_auth_user}'"),
+            indent(10, "- name: BASIC_AUTH_HASH"),
+            indent(12, f"secureValue: '{basic_auth_hash}'"),
+            indent(8, "command:"),
+            indent(10, "- sh"),
+            indent(10, "- -lc"),
+            indent(10, "- |"),
+        ]
 
-    for line in caddy_cmd.splitlines():
-        lines.append(indent(12, line))
+        for line in caddy_cmd.splitlines():
+            lines.append(indent(12, line))
 
+        lines += [
+            indent(8, "volumeMounts:"),
+            indent(10, "- name: caddy-data"),
+            indent(12, "mountPath: /data"),
+            indent(10, "- name: caddy-config"),
+            indent(12, "mountPath: /config"),
+        ]
+
+    # Container group properties
     lines += [
-        indent(8, "volumeMounts:"),
-        indent(10, "- name: caddy-data"),
-        indent(12, "mountPath: /data"),
-        indent(10, "- name: caddy-config"),
-        indent(12, "mountPath: /config"),
         "",
         indent(2, "osType: Linux"),
         indent(2, f"restartPolicy: {restart_policy_norm}"),
@@ -245,8 +252,20 @@ def generate_deploy_yaml(
         indent(4, "type: Public"),
         indent(4, f"dnsNameLabel: {dns_label}"),
         indent(4, "ports:"),
-        indent(6, "- port: 80"),
-        indent(6, "- port: 443"),
+    ]
+
+    if include_caddy:
+        lines += [
+            indent(6, "- port: 80"),
+            indent(6, "- port: 443"),
+        ]
+    else:
+        if len(all_app_ports) > 5:
+            raise ValueError(f"ACI supports max 5 public ports; got {len(all_app_ports)}: {all_app_ports}")
+        for p in all_app_ports:
+            lines += [indent(6, f"- port: {p}")]
+
+    lines += [
         "",
         indent(2, "volumes:"),
         indent(4, "- name: workspace-volume"),
@@ -265,45 +284,52 @@ def generate_deploy_yaml(
             indent(8, f"storageAccountKey: {storage_key}"),
         ]
 
-    lines += [
-        indent(4, "- name: caddy-data"),
-        indent(6, "azureFile:"),
-        indent(8, f"shareName: {caddy_data_share_name}"),
-        indent(8, f"storageAccountName: {storage_name}"),
-        indent(8, f"storageAccountKey: {storage_key}"),
-        indent(4, "- name: caddy-config"),
-        indent(6, "azureFile:"),
-        indent(8, f"shareName: {caddy_config_share_name}"),
-        indent(8, f"storageAccountName: {storage_name}"),
-        indent(8, f"storageAccountKey: {storage_key}"),
-    ]
+    if include_caddy:
+        lines += [
+            indent(4, "- name: caddy-data"),
+            indent(6, "azureFile:"),
+            indent(8, f"shareName: {caddy_data_share_name}"),
+            indent(8, f"storageAccountName: {storage_name}"),
+            indent(8, f"storageAccountKey: {storage_key}"),
+            indent(4, "- name: caddy-config"),
+            indent(6, "azureFile:"),
+            indent(8, f"shareName: {caddy_config_share_name}"),
+            indent(8, f"storageAccountName: {storage_name}"),
+            indent(8, f"storageAccountKey: {storage_key}"),
+        ]
     
     if other_image:
-         # Find index of sidecar start to insert before it
-         # Looking for "- name: tls-proxy" (indented by 4 spaces)
-         insert_idx = -1
-         params_start = indent(4, "- name: tls-proxy")
-         for i, line in enumerate(lines):
-             if line.strip() == "- name: tls-proxy":
-                 insert_idx = i
-                 break
-         
-         if insert_idx == -1:
-             raise ValueError("Could not find insertion point for 'other' container (expected '- name: tls-proxy').")
-         else:
-             other_block = [
-                indent(4, "- name: other"),
-                indent(6, "properties:"),
-                indent(8, f"image: {other_image}"),
-                indent(8, "resources:"),
-                indent(10, "requests:"),
-                indent(12, f"cpu: {other_cpu_cores}"),
-                indent(12, f"memoryInGB: {other_mem_gb_norm}"),
-                indent(8, "volumeMounts:"),
-                indent(10, "- name: workspace-volume"),
-                indent(12, "mountPath: /home/coder/workspace"),
-                "",
-             ]
-             lines = lines[:insert_idx] + other_block + lines[insert_idx:]
+        insert_idx = -1
+
+        if include_caddy:
+            for i, line in enumerate(lines):
+                if line.strip() == "- name: tls-proxy":
+                    insert_idx = i
+                    break
+            if insert_idx == -1:
+                raise ValueError("Could not find insertion point for 'other' container (expected '- name: tls-proxy').")
+        else:
+            # Insert before container group properties (osType), right after the app container.
+            for i, line in enumerate(lines):
+                if line.strip() == "osType: Linux":
+                    insert_idx = i - 1  # keep a blank line before group properties
+                    break
+            if insert_idx < 0:
+                raise ValueError("Could not find insertion point for 'other' container (expected 'osType: Linux').")
+
+        other_block = [
+            indent(4, "- name: other"),
+            indent(6, "properties:"),
+            indent(8, f"image: {other_image}"),
+            indent(8, "resources:"),
+            indent(10, "requests:"),
+            indent(12, f"cpu: {other_cpu_cores}"),
+            indent(12, f"memoryInGB: {other_mem_gb_norm}"),
+            indent(8, "volumeMounts:"),
+            indent(10, "- name: workspace-volume"),
+            indent(12, "mountPath: /home/coder/workspace"),
+            "",
+        ]
+        lines = lines[:insert_idx] + other_block + lines[insert_idx:]
 
     return "\n".join(lines) + "\n"

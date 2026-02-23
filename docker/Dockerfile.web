@@ -8,8 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.web.runtime.txt /tmp/requirements.web.runtime.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.web.runtime.txt
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY src /app/src
 

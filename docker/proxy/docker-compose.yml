@@ -1,0 +1,27 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: central-proxy
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+      - ../../.env.secrets
+      - ../../.env.deploy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - caddy
+
+networks:
+  caddy:
+    external: true
+    name: caddy
+
+volumes:
+  caddy_data:
+  caddy_config:

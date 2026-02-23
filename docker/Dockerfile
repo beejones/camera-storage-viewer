@@ -9,12 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
-# Install runtime Python deps (FTP + viewer)
-COPY requirements.runtime.txt /tmp/requirements.runtime.txt
-COPY requirements.web.runtime.txt /tmp/requirements.web.runtime.txt
-RUN pip install --no-cache-dir \
-  -r /tmp/requirements.runtime.txt \
-  -r /tmp/requirements.web.runtime.txt
+# Install Python deps
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Copy only what we need to run
 COPY src /app/src

@@ -29,7 +29,6 @@ from env_schema import (
     VarsEnum,
     apply_defaults,
     filter_schema_by_targets,
-    normalize_legacy_deploy_keys,
     parse_dotenv_file,
     validate_cross_field_rules,
     validate_known_keys,
@@ -71,9 +70,6 @@ def _validate_deploy(deploy_path: Path | None) -> None:
     file_kv: dict[str, str] = {}
     if deploy_path is not None and deploy_path.exists():
         file_kv = parse_dotenv_file(deploy_path)
-        file_kv, legacy_warnings = normalize_legacy_deploy_keys(file_kv)
-        for w in legacy_warnings:
-            print(f"⚠️  [env] {w}", file=sys.stderr)
         validate_known_keys(DEPLOY_SCHEMA, file_kv, context=context)
 
     # Overlay process env (CI) on top of file values.
