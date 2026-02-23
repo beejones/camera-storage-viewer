@@ -1,0 +1,41 @@
+# Centralized Caddyfile for TLS termination and Routing
+# 
+# Requires an external network `caddy` to route to services by their container name.
+
+{
+    email {$ACME_EMAIL:?required}
+}
+# -------------------------
+# Camera Storage Viewer Route
+# -------------------------
+{$PUBLIC_DOMAIN} {
+    tls {$ACME_EMAIL}
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+    basic_auth /* {
+        {$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+    }
+
+    reverse_proxy camera-storage-viewer:8081 {
+        header_up Upgrade {http.request.header.Upgrade}
+        header_up Connection {http.request.header.Connection}
+    }
+}
+
+# -------------------------
+# Portainer Admin Route
+# -------------------------
+portainer.{$PUBLIC_DOMAIN} {
+    tls {$ACME_EMAIL}
+    header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    
+    # Route to the admin portal of portainer over the secure local HTTP network
+    reverse_proxy portainer:9000
+}
+
+# -------------------------
+# Default Healthcheck Block
+# -------------------------
+:80 {
+    respond /healthz "OK" 200
+}

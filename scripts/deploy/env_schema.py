@@ -23,7 +23,9 @@ from dotenv import dotenv_values
 
 class EnvTarget(str, Enum):
     DOTENV_RUNTIME = "dotenv_runtime"  # `.env`
+    DOTENV_SECRETS = "dotenv_secrets"  # `.env.secrets`
     DOTENV_DEPLOY = "dotenv_deploy"  # `.env.deploy`
+    DOTENV_DEPLOY_SECRETS = "dotenv_deploy_secrets"  # `.env.deploy.secrets`
     GH_ACTIONS_VAR = "gh_actions_var"  # GitHub Actions variable
     GH_ACTIONS_SECRET = "gh_actions_secret"  # GitHub Actions secret
     KEYVAULT_SECRET = "keyvault_secret"  # Azure Key Vault secret
@@ -31,6 +33,7 @@ class EnvTarget(str, Enum):
 
 class KeyVaultSecretName(str, Enum):
     ENV = "env"  # stores full runtime `.env` content
+    ENV_SECRETS = "env-secrets"  # stores full runtime `.env.secrets` content
 
 
 class VarsEnum(str, Enum):
@@ -53,6 +56,7 @@ class VarsEnum(str, Enum):
 
     # Image / registry
     APP_IMAGE = "APP_IMAGE"
+    DOCKERFILE = "DOCKERFILE"
     GHCR_PRIVATE = "GHCR_PRIVATE"
     GHCR_USERNAME = "GHCR_USERNAME"
 
@@ -80,6 +84,20 @@ class VarsEnum(str, Enum):
 
     # Runtime
     BASIC_AUTH_USER = "BASIC_AUTH_USER"
+
+    # Ubuntu / Portainer deployment
+    UBUNTU_SSH_HOST = "UBUNTU_SSH_HOST"
+    UBUNTU_REMOTE_DIR = "UBUNTU_REMOTE_DIR"
+    UBUNTU_COMPOSE_FILES = "UBUNTU_COMPOSE_FILES"
+    UBUNTU_BUILD_PUSH = "UBUNTU_BUILD_PUSH"
+    UBUNTU_SYNC_SECRETS = "UBUNTU_SYNC_SECRETS"
+    UBUNTU_PROXY_DIR = "UBUNTU_PROXY_DIR"
+    PORTAINER_HTTPS_PORT = "PORTAINER_HTTPS_PORT"
+    PORTAINER_WEBHOOK_INSECURE = "PORTAINER_WEBHOOK_INSECURE"
+    PORTAINER_WEBHOOK_URL = "PORTAINER_WEBHOOK_URL"
+    PORTAINER_STACK_NAME = "PORTAINER_STACK_NAME"
+    PORTAINER_ENDPOINT_ID = "PORTAINER_ENDPOINT_ID"
+    CADDY_PROXY_DIR = "CADDY_PROXY_DIR"
 
     # Runtime (camera FTP)
     OUT_DIR = "OUT_DIR"
@@ -118,11 +136,16 @@ class SecretsEnum(str, Enum):
     FTP_PASSWORD = "FTP_PASSWORD"
     FTP_USERS_JSON = "FTP_USERS_JSON"
 
+    # Ubuntu / Portainer deployment secrets
+    PORTAINER_WEBHOOK_TOKEN = "PORTAINER_WEBHOOK_TOKEN"
+    PORTAINER_ACCESS_TOKEN = "PORTAINER_ACCESS_TOKEN"
+
     # App/runtime secret (optional; user-defined)
     APP_SECRET = "APP_SECRET"
 
     # GitHub Actions meta-secret (not a container env var, but required by CI wiring)
     RUNTIME_ENV_DOTENV = "RUNTIME_ENV_DOTENV"
+    RUNTIME_SECRETS_DOTENV = "RUNTIME_SECRETS_DOTENV"
 
 
 @dataclass(frozen=True)
@@ -153,17 +176,6 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
         mandatory=False,
         default="admin",
         targets=frozenset({EnvTarget.DOTENV_RUNTIME, EnvTarget.GH_ACTIONS_VAR}),
-    ),
-    EnvKeySpec(
-        key=SecretsEnum.BASIC_AUTH_HASH,
-        mandatory=False,
-        targets=frozenset({EnvTarget.DOTENV_RUNTIME, EnvTarget.GH_ACTIONS_SECRET}),
-    ),
-    EnvKeySpec(
-        key=SecretsEnum.APP_SECRET,
-        mandatory=False,
-        default=None,
-        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
     ),
 
     # Camera FTP runtime configuration
@@ -278,12 +290,6 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
         targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
     ),
     EnvKeySpec(
-        key=SecretsEnum.FTP_PASSWORD,
-        mandatory=False,
-        default=None,
-        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
-    ),
-    EnvKeySpec(
         key=VarsEnum.FTP_CAMERA_ID,
         mandatory=False,
         default="camera1",
@@ -296,16 +302,37 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
         targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
     ),
     EnvKeySpec(
-        key=SecretsEnum.FTP_USERS_JSON,
-        mandatory=False,
-        default=None,
-        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
-    ),
-    EnvKeySpec(
         key=VarsEnum.RETENTION_DAYS,
         mandatory=False,
         default="30",
         targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
+    ),
+)
+
+
+SECRETS_SCHEMA: tuple[EnvKeySpec, ...] = (
+    EnvKeySpec(
+        key=SecretsEnum.BASIC_AUTH_HASH,
+        mandatory=True,
+        targets=frozenset({EnvTarget.DOTENV_SECRETS, EnvTarget.GH_ACTIONS_SECRET}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.APP_SECRET,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_SECRETS}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.FTP_PASSWORD,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_SECRETS}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.FTP_USERS_JSON,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_SECRETS}),
     ),
 )
 
@@ -401,7 +428,7 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         key=SecretsEnum.GHCR_TOKEN,
         mandatory=False,
         default=None,
-        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_SECRET}),
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY_SECRETS, EnvTarget.GH_ACTIONS_SECRET}),
     ),
     EnvKeySpec(
         key=VarsEnum.APP_CPU_CORES,
@@ -491,6 +518,109 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
         key=SecretsEnum.RUNTIME_ENV_DOTENV,
         mandatory=True,
         targets=frozenset({EnvTarget.GH_ACTIONS_SECRET}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.RUNTIME_SECRETS_DOTENV,
+        mandatory=False,
+        targets=frozenset({EnvTarget.GH_ACTIONS_SECRET}),
+    ),
+
+    # Ubuntu / Portainer deployment variables
+    EnvKeySpec(
+        key=VarsEnum.UBUNTU_SSH_HOST,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.UBUNTU_REMOTE_DIR,
+        mandatory=False,
+        default="/opt/camera-storage-viewer",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.UBUNTU_COMPOSE_FILES,
+        mandatory=False,
+        default="docker-compose.yml",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.UBUNTU_BUILD_PUSH,
+        mandatory=False,
+        default="true",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.UBUNTU_SYNC_SECRETS,
+        mandatory=False,
+        default="true",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.UBUNTU_PROXY_DIR,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.PORTAINER_HTTPS_PORT,
+        mandatory=False,
+        default="9943",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.PORTAINER_WEBHOOK_INSECURE,
+        mandatory=False,
+        default="false",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.PORTAINER_WEBHOOK_URL,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.PORTAINER_STACK_NAME,
+        mandatory=False,
+        default="camera-storage-viewer",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.PORTAINER_ENDPOINT_ID,
+        mandatory=False,
+        default="1",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.CADDY_PROXY_DIR,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.WEB_PORT,
+        mandatory=False,
+        default="8081",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=VarsEnum.DOCKERFILE,
+        mandatory=False,
+        default="docker/Dockerfile",
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.PORTAINER_WEBHOOK_TOKEN,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY_SECRETS, EnvTarget.GH_ACTIONS_SECRET}),
+    ),
+    EnvKeySpec(
+        key=SecretsEnum.PORTAINER_ACCESS_TOKEN,
+        mandatory=False,
+        default=None,
+        targets=frozenset({EnvTarget.DOTENV_DEPLOY_SECRETS, EnvTarget.GH_ACTIONS_SECRET}),
     ),
 )
 
