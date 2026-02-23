@@ -177,6 +177,11 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
         default="admin",
         targets=frozenset({EnvTarget.DOTENV_RUNTIME, EnvTarget.GH_ACTIONS_VAR}),
     ),
+    EnvKeySpec(
+        key=SecretsEnum.BASIC_AUTH_HASH,
+        mandatory=True,
+        targets=frozenset({EnvTarget.DOTENV_RUNTIME, EnvTarget.GH_ACTIONS_SECRET}),
+    ),
 
     # Camera FTP runtime configuration
     EnvKeySpec(
