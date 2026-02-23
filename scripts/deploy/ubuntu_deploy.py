@@ -212,9 +212,9 @@ def build_and_push_local_image(*, repo_root: Path, app_image: str, dockerfile: s
     dockerfile_path = repo_root / dockerfile
     if not dockerfile_path.exists():
         raise SystemExit(f"Dockerfile not found for build/push: {dockerfile_path}")
-    context_dir = str(Path(dockerfile).parent)
-    if context_dir == "":
-        context_dir = "."
+    # Dockerfile COPY paths in this repo are written relative to repository root.
+    # Always build with repo root context so `COPY requirements.*`, `COPY src`, etc. resolve.
+    context_dir = "."
     build_cmd = build_docker_build_cmd(app_image=app_image, dockerfile=dockerfile, context_dir=context_dir)
     push_cmd = build_docker_push_cmd(app_image=app_image)
     subprocess.run(build_cmd, cwd=str(repo_root), check=True)
