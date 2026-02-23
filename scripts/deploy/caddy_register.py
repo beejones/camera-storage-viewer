@@ -86,6 +86,28 @@ def _public_domain_placeholder_present(caddyfile_text: str) -> bool:
     return bool(pattern.search(caddyfile_text))
 
 
+def _replace_auto_registered_block(*, caddyfile_text: str, domain: str, replacement_block: str) -> tuple[str, bool]:
+    marker = (
+        r"^# -------------------------\n"
+        r"# " + re.escape(domain) + r" Route \(auto-registered\)\n"
+        r"# -------------------------\n"
+        + re.escape(domain)
+        + r"\s*\{[\s\S]*?^\}\n?"
+    )
+    pattern = re.compile(marker, re.MULTILINE)
+    match = pattern.search(caddyfile_text)
+    if not match:
+        return caddyfile_text, False
+
+    old_block = match.group(0).strip()
+    new_block = replacement_block.strip()
+    if old_block == new_block:
+        return caddyfile_text, False
+
+    replaced = caddyfile_text[: match.start()] + replacement_block.rstrip() + "\n\n" + caddyfile_text[match.end() :]
+    return replaced, True
+
+
 def _remote_public_domain(*, ssh_host: str, caddy_container: str) -> str:
     """Read PUBLIC_DOMAIN from remote Caddy container env if available."""
     cmd = (
@@ -141,9 +163,57 @@ def ensure_caddy_registration(
     caddyfile_text = result.stdout
 
     # 2. Already registered?  ────────────────────────────────────────────
+    desired_block = SITE_BLOCK_TEMPLATE.format(domain=domain, service=service, port=port)
+
     if _domain_present(caddyfile_text, domain):
-        logger.info("%s %s already registered", LOG_PREFIX, domain)
-        return False
+        updated_text, was_updated = _replace_auto_registered_block(
+            caddyfile_text=caddyfile_text,
+            domain=domain,
+            replacement_block=desired_block,
+        )
+        if not was_updated:
+            logger.info("%s %s already registered", LOG_PREFIX, domain)
+            return False
+
+        overwrite_cmd = f"tee {shlex.quote(caddyfile_path)} > /dev/null"
+        full = [
+            "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+            ssh_host, overwrite_cmd,
+        ]
+        try:
+            subprocess.run(full, input=updated_text, text=True, capture_output=True, check=True)
+        except subprocess.CalledProcessError as exc:
+            detail = str(exc.stderr or "").strip() or str(exc.stdout or "").strip()
+            raise RuntimeError(
+                f"Failed to update Caddy block on {ssh_host}: {detail}"
+            )
+
+        logger.info("%s Updated existing auto-registered block for %s", LOG_PREFIX, domain)
+
+        restart_result = _ssh_run(
+            ssh_host,
+            f"docker restart {shlex.quote(caddy_container)}",
+            check=False,
+        )
+        if restart_result.returncode != 0:
+            detail = _result_text(restart_result)
+            raise RuntimeError(
+                f"Failed to restart {caddy_container} on {ssh_host}: {detail}"
+            )
+
+        validate_cmd = (
+            f"sleep 3 && docker exec {shlex.quote(caddy_container)} "
+            f"caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"
+        )
+        validate_result = _ssh_run(ssh_host, validate_cmd, check=False)
+        if validate_result.returncode != 0:
+            detail = _result_text(validate_result)
+            raise RuntimeError(
+                "Caddy registration updated the route but config validation failed: "
+                f"{detail}. Check remote logs with: docker logs {caddy_container}"
+            )
+
+        return True
 
     # Special case: the base Caddyfile may already define {$PUBLIC_DOMAIN}.
     # If that placeholder resolves to this domain in the running proxy
@@ -162,7 +232,7 @@ def ensure_caddy_registration(
             return False
 
     # 3. Build the site block  ───────────────────────────────────────────
-    block = SITE_BLOCK_TEMPLATE.format(domain=domain, service=service, port=port)
+    block = desired_block
 
     if dry_run:
         logger.info("%s [dry-run] Would append to %s", LOG_PREFIX, caddyfile_path)

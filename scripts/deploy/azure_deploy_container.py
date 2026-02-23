@@ -18,6 +18,7 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import subprocess
 import sys
@@ -239,7 +240,54 @@ def generate_deploy_yaml(
     )
 
 
+def _append_data_share_name_from_env_file(*, argv: list[str]) -> list[str]:
+    if "--data-share-name" in argv:
+        return list(argv)
+
+    env_file_path: str | None = None
+    for index, token in enumerate(argv):
+        if token == "--env-file" and index + 1 < len(argv):
+            env_file_path = argv[index + 1]
+            break
+
+    if not env_file_path:
+        return list(argv)
+
+    env_path = Path(env_file_path).expanduser()
+    if not env_path.exists():
+        return list(argv)
+
+    env_kv = parse_dotenv_file(env_path)
+    container_name = str(env_kv.get(VarsEnum.AZURE_CONTAINER_NAME.value) or "").strip()
+    if not container_name:
+        return list(argv)
+
+    out = list(argv)
+    out.extend(["--data-share-name", f"{container_name}-data"])
+    return out
+
+
+def _maybe_delegate_to_legacy_wrapper(*, argv: list[str], repo_root_override: Path | None) -> bool:
+    upstream_module = sys.modules.get("azure_deploy_container")
+    if upstream_module is None:
+        return False
+    if upstream_module is sys.modules.get(__name__):
+        return False
+
+    upstream_main = getattr(upstream_module, "main", None)
+    if not callable(upstream_main):
+        return False
+
+    forwarded_argv = _append_data_share_name_from_env_file(argv=argv)
+    upstream_main(forwarded_argv, repo_root_override=repo_root_override)
+    return True
+
+
 def main(argv: list[str] | None = None, repo_root_override: Path | None = None) -> None:
+    incoming_argv = list(argv) if argv is not None else list(sys.argv[1:])
+    if _maybe_delegate_to_legacy_wrapper(argv=incoming_argv, repo_root_override=repo_root_override):
+        return
+
     parser = argparse.ArgumentParser(description="Deploy protected-container to Azure Container Instances")
 
     # These can come from --env-file (recommended) so they are not required.
@@ -502,7 +550,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         help="Do not abort deployment if a hook fails (default: fail on error)",
     )
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(incoming_argv)
 
     step_number = 0
     step_color = "\033[95m"

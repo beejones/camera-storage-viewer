@@ -104,6 +104,23 @@ def build_ssh_connectivity_cmd(*, host: str) -> list[str]:
     return build_ssh_cmd(host=host, remote_command="echo SSH_OK")
 
 
+def discover_remote_caddyfile_path(*, host: str) -> str:
+    cmd = (
+        "docker inspect central-proxy "
+        "--format '{{range .Mounts}}{{if eq .Destination \"/etc/caddy/Caddyfile\"}}{{.Source}}{{end}}{{end}}'"
+    )
+    result = subprocess.run(
+        build_ssh_cmd(host=host, remote_command=cmd),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    source_path = str(result.stdout or "").strip()
+    return source_path
+
+
 def build_docker_build_cmd(*, app_image: str, dockerfile: str, context_dir: str) -> list[str]:
     return ["docker", "build", "-f", dockerfile, "-t", app_image, context_dir]
 
@@ -122,7 +139,25 @@ def build_compose_config_cmd(*, compose_files: list[str]) -> list[str]:
 
 def render_compose_stack_content(*, repo_root: Path, compose_files: list[str]) -> str:
     cmd = build_compose_config_cmd(compose_files=compose_files)
-    result = subprocess.run(cmd, cwd=str(repo_root), check=False, capture_output=True, text=True)
+    compose_env = dict(os.environ)
+    for dotenv_name in [".env", ".env.secrets", ".env.deploy", ".env.deploy.secrets"]:
+        dotenv_path = repo_root / dotenv_name
+        if not dotenv_path.exists():
+            continue
+        raw = dotenv_values(dotenv_path)
+        for key, value in raw.items():
+            if not key:
+                continue
+            compose_env[str(key)] = "" if value is None else str(value)
+
+    result = subprocess.run(
+        cmd,
+        cwd=str(repo_root),
+        check=False,
+        capture_output=True,
+        text=True,
+        env=compose_env,
+    )
     if result.returncode != 0:
         err = str(result.stderr or "").strip() or str(result.stdout or "").strip()
         raise SystemExit(f"Failed to render compose config for Portainer stack creation: {err}")
@@ -150,6 +185,29 @@ def prepare_stack_content_for_portainer(*, stack_content: str, app_image: str) -
     # Ubuntu/Portainer uses the centralized proxy stack for :80/:443.
     # Drop local caddy sidecar service from the app stack to avoid bind conflicts.
     services.pop("caddy", None)
+
+    web_service = services.get("web")
+    if isinstance(web_service, dict):
+        # Centralized proxy reaches web over the external `caddy` network.
+        # Keep web internal networking, but remove host port binding for Ubuntu deploys.
+        web_service.pop("ports", None)
+
+        existing_networks = web_service.get("networks")
+        merged_networks: list[str] = []
+        if isinstance(existing_networks, list):
+            merged_networks = [str(n) for n in existing_networks if str(n).strip()]
+        elif isinstance(existing_networks, str):
+            merged_networks = [existing_networks]
+
+        if "caddy" not in merged_networks:
+            merged_networks.append("caddy")
+        web_service["networks"] = merged_networks
+
+    top_networks = payload.get("networks")
+    if not isinstance(top_networks, dict):
+        top_networks = {}
+        payload["networks"] = top_networks
+    top_networks.setdefault("caddy", {"external": True, "name": "caddy"})
 
     remaining_build_services: list[str] = []
     app_image_value = app_image.strip()
@@ -644,7 +702,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     if not resolved_web_port:
         resolved_web_port = read_deploy_key(repo_root=repo_root, key=ENV_WEB_PORT)
     if not resolved_web_port:
-        resolved_web_port = "3000"
+        resolved_web_port = "8081"
 
     resolved_caddy_proxy_dir = str(os.getenv(ENV_CADDY_PROXY_DIR) or "").strip()
     if not resolved_caddy_proxy_dir:
@@ -655,11 +713,18 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         # primary compose service name by convention).
         service_name = registration_service_name
 
-        # The proxy Caddyfile lives in the proxy stack's repo on the same host.
-        # Default convention: sibling path under camera-storage-viewer.
-        # Override with CADDY_PROXY_DIR when downstream layout differs.
-        proxy_repo_dir = Path(resolved_caddy_proxy_dir) if resolved_caddy_proxy_dir else (remote_dir.parent / "camera-storage-viewer")
-        caddyfile_path = str(proxy_repo_dir / "docker" / "proxy" / "Caddyfile")
+        # Determine Caddyfile path. Prefer explicit override; otherwise inspect
+        # the running central-proxy container mount source.
+        if resolved_caddy_proxy_dir:
+            proxy_repo_dir = Path(resolved_caddy_proxy_dir)
+            caddyfile_path = str(proxy_repo_dir / "docker" / "proxy" / "Caddyfile")
+        else:
+            discovered_caddyfile_path = discover_remote_caddyfile_path(host=resolved_host)
+            if discovered_caddyfile_path:
+                caddyfile_path = discovered_caddyfile_path
+            else:
+                proxy_repo_dir = remote_dir.parent / "camera-storage-viewer"
+                caddyfile_path = str(proxy_repo_dir / "docker" / "proxy" / "Caddyfile")
 
         log_step("Registering with centralized Caddy proxy", icon="🔒")
         try:
