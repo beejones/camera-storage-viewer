@@ -147,6 +147,10 @@ def prepare_stack_content_for_portainer(*, stack_content: str, app_image: str) -
     if not isinstance(services, dict):
         return stack_content
 
+    # Ubuntu/Portainer uses the centralized proxy stack for :80/:443.
+    # Drop local caddy sidecar service from the app stack to avoid bind conflicts.
+    services.pop("caddy", None)
+
     remaining_build_services: list[str] = []
     app_image_value = app_image.strip()
 
@@ -477,6 +481,19 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         app_image=resolved_app_image,
     )
 
+    registration_service_name = resolved_portainer_stack_name or remote_dir.name
+    try:
+        rendered_payload = yaml.safe_load(stack_file_content)
+        rendered_services = rendered_payload.get("services") if isinstance(rendered_payload, dict) else None
+        if isinstance(rendered_services, dict):
+            web_payload = rendered_services.get("web")
+            if isinstance(web_payload, dict):
+                web_container_name = str(web_payload.get("container_name") or "").strip()
+                if web_container_name:
+                    registration_service_name = web_container_name
+    except Exception:
+        pass
+
     log_step("Prepared deployment plan", icon="🧭")
     log_info(f"Target: {resolved_host}")
     log_info(f"Remote dir: {remote_dir}")
@@ -636,7 +653,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     if resolved_public_domain:
         # Derive service name from the Portainer stack name (which matches the
         # primary compose service name by convention).
-        service_name = resolved_portainer_stack_name or remote_dir.name
+        service_name = registration_service_name
 
         # The proxy Caddyfile lives in the proxy stack's repo on the same host.
         # Default convention: sibling path under camera-storage-viewer.
