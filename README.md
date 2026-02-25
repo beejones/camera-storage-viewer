@@ -234,7 +234,7 @@ FTP requires:
 - control port `21`
 - a passive range (default in this repo): `50000-50003`
 
-Locally, [docker-compose.yml](docker-compose.yml) publishes these ports.
+Locally, [docker/docker-compose.yml](docker/docker-compose.yml) publishes these ports.
 In Azure, the ACI container group must expose the same ports.
 
 Important: Azure Container Instances limits a container group to **5 public ports total**, so the passive range must be small (control port 21 + up to 4 passive ports).

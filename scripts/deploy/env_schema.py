@@ -539,7 +539,7 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
     EnvKeySpec(
         key=VarsEnum.UBUNTU_COMPOSE_FILES,
         mandatory=False,
-        default="docker-compose.yml",
+        default="docker/docker-compose.yml",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(

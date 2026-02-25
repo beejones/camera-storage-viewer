@@ -11,7 +11,7 @@ Replace the stub `RETENTION_DAYS` variable with proper storage manager registrat
 - [x] Remove `RETENTION_DAYS` `EnvKeySpec` entry from `RUNTIME_SCHEMA` in `scripts/deploy/env_schema.py`
 
 ### Phase 1 — Add Storage Manager Compose Labels
-- [x] Add `labels` to the `ftp` service in `docker-compose.yml`:
+- [x] Add `labels` to the `ftp` service in `docker/docker-compose.yml`:
   - Rule 0: `incoming/vooraan` → `remove_before_date`, `max_age_days: 5`
   - Rule 1: whole data volume cap → `max_size`, 100 GiB
 
@@ -51,7 +51,7 @@ Replace the stub `RETENTION_DAYS` variable with proper storage manager registrat
 
 ---
 
-### Phase 1 — Storage Registration Labels in `docker-compose.yml`
+### Phase 1 — Storage Registration Labels in `docker/docker-compose.yml`
 
 Add `labels` to the **`ftp`** service:
 

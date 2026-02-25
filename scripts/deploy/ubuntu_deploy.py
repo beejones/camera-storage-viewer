@@ -665,7 +665,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     compose_files = (
         [s.strip() for s in resolved_compose_files_raw.split(",") if s.strip()]
         if resolved_compose_files_raw
-        else ["docker-compose.yml"]
+        else ["docker/docker-compose.yml"]
     )
 
     # Validate required local files exist.
