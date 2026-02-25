@@ -28,6 +28,21 @@ services:
       - ./out:/data
       # Local .env for development (production uses Key Vault)
       - ./.env:/app/.env:ro
+    labels:
+      # Storage manager registration (processed by scripts/deploy/_upstream/docker/storage-manager)
+      # Rule 0: remove incoming/vooraan clips older than 5 days
+      storage-manager.0.volume: "camera-storage-viewer_data"
+      storage-manager.0.path: "/incoming/vooraan"
+      storage-manager.0.algorithm: "remove_before_date"
+      storage-manager.0.max_age_days: "5"
+      storage-manager.0.description: "Incoming vooraan camera: keep 5 days"
+      # Rule 1: global hard cap — total data volume must not exceed 100 GiB; oldest files removed first
+      storage-manager.1.volume: "camera-storage-viewer_data"
+      storage-manager.1.path: "/"
+      storage-manager.1.algorithm: "max_size"
+      storage-manager.1.max_bytes: "107374182400"
+      storage-manager.1.sort_by: "mtime"
+      storage-manager.1.description: "Hard cap: total data volume ≤ 100 GiB"
     ports:
       - "21:21"
       - "50000-50003:50000-50003"

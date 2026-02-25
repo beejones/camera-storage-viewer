@@ -7,8 +7,10 @@ from scripts.deploy.ubuntu_deploy import (
     build_rsync_cmd,
     build_ssh_connectivity_cmd,
     build_ssh_cmd,
+    collect_storage_manager_registrations,
     parse_boolish,
     prepare_stack_content_for_portainer,
+    register_storage_manager_registrations,
     rewrite_rendered_paths_for_remote,
     read_deploy_key,
     read_deploy_secret_key,
@@ -217,3 +219,86 @@ def test_rewrite_rendered_paths_for_remote_replaces_local_repo_root():
     )
     assert "/home/ronny/dev/protected-azure-container" not in out
     assert "/home/ronny/containers/protected-container/.env" in out
+
+
+def test_collect_storage_manager_registrations_from_mapping_labels():
+    stack_content = """
+services:
+  ftp:
+    labels:
+      storage-manager.0.volume: camera-storage-viewer_data
+      storage-manager.0.path: /incoming
+      storage-manager.0.algorithm: remove_before_date
+      storage-manager.0.max_age_days: "5"
+      storage-manager.0.description: Keep incoming clips for 5 days
+"""
+    out = collect_storage_manager_registrations(stack_content=stack_content)
+    assert out == [
+        {
+            "volume_name": "camera-storage-viewer_data",
+            "path": "/incoming",
+            "algorithm": "remove_before_date",
+            "params": {"max_age_days": 5},
+            "source_service": "ftp",
+            "source_index": 0,
+            "description": "Keep incoming clips for 5 days",
+        }
+    ]
+
+
+def test_collect_storage_manager_registrations_raises_for_missing_required_fields():
+    stack_content = """
+services:
+  ftp:
+    labels:
+      storage-manager.0.volume: camera-storage-viewer_data
+      storage-manager.0.algorithm: remove_before_date
+"""
+    try:
+        collect_storage_manager_registrations(stack_content=stack_content)
+        assert False, "expected SystemExit"
+    except SystemExit as exc:
+        assert "missing required fields" in str(exc)
+
+
+def test_register_storage_manager_registrations_posts_to_api_endpoint(monkeypatch):
+    posted: list[tuple[str, dict, int]] = []
+
+    class _Resp:
+        status_code = 201
+        text = ""
+
+    def fake_post(url, json, timeout):
+        posted.append((str(url), dict(json), int(timeout)))
+        return _Resp()
+
+    monkeypatch.setattr("scripts.deploy.ubuntu_deploy.requests.post", fake_post)
+
+    register_storage_manager_registrations(
+        api_url="https://storage.example.com",
+        registrations=[
+            {
+                "volume_name": "camera-storage-viewer_data",
+                "path": "/incoming",
+                "algorithm": "remove_before_date",
+                "params": {"max_age_days": 5},
+                "description": "Keep incoming clips for 5 days",
+                "source_service": "ftp",
+                "source_index": 0,
+            }
+        ],
+    )
+
+    assert posted == [
+        (
+            "https://storage.example.com/api/register",
+            {
+                "volume_name": "camera-storage-viewer_data",
+                "path": "/incoming",
+                "algorithm": "remove_before_date",
+                "params": {"max_age_days": 5},
+                "description": "Keep incoming clips for 5 days",
+            },
+            10,
+        )
+    ]
