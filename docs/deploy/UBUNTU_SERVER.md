@@ -99,7 +99,7 @@ python scripts/deploy/ubuntu_deploy.py \
   --sync-secrets
 ```
 
-This pushes the image, syncs `docker-compose.yml` and `.env` files, and triggers Portainer to pull and restart the stack.
+This pushes the image, syncs `docker/docker-compose.yml` and `.env` files, and triggers Portainer to pull and restart the stack.
 
 ## Troubleshooting Caddy
 

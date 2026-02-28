@@ -37,14 +37,14 @@ def _interpolate_any(data: Any) -> Any:
 def load_docker_compose_config(*, compose_path: Path) -> dict[str, Any]:
     raw = yaml.safe_load(compose_path.read_text())
     if not isinstance(raw, dict):
-        raise ValueError("docker-compose.yml must be a mapping")
+        raise ValueError("docker/docker-compose.yml must be a mapping")
     return _interpolate_any(raw)
 
 
 def get_services(compose_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     services = compose_config.get("services")
     if not isinstance(services, dict):
-        raise ValueError("docker-compose.yml missing services")
+        raise ValueError("docker/docker-compose.yml missing services")
     out: dict[str, dict[str, Any]] = {}
     for name, svc in services.items():
         if isinstance(svc, dict):

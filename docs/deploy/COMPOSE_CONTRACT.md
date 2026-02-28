@@ -1,6 +1,6 @@
 # Docker Compose Deployment Contract
 
-This document defines the expected structure of `docker-compose.yml` for successful deployment via `scripts/deploy/azure_deploy_container.py`.
+This document defines the expected structure of `docker/docker-compose.yml` for successful deployment via `scripts/deploy/azure_deploy_container.py`.
 
 ## Overview
 

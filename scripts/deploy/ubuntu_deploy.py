@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import requests
 from dotenv import dotenv_values
@@ -49,6 +51,10 @@ ENV_PORTAINER_ACCESS_TOKEN = "PORTAINER_ACCESS_TOKEN"
 ENV_PORTAINER_STACK_NAME = "PORTAINER_STACK_NAME"
 ENV_PORTAINER_ENDPOINT_ID = "PORTAINER_ENDPOINT_ID"
 ENV_CADDY_PROXY_DIR = "CADDY_PROXY_DIR"
+ENV_STORAGE_MANAGER_API_URL = "STORAGE_MANAGER_API_URL"
+
+
+_STORAGE_MANAGER_LABEL_PATTERN = re.compile(r"^storage-manager\.(\d+)\.(.+)$")
 
 
 def _subprocess_error_text(exc: subprocess.CalledProcessError) -> str:
@@ -311,6 +317,132 @@ def parse_boolish(value: str, *, default: bool = False) -> bool:
     return default
 
 
+def _normalize_compose_labels(labels: Any) -> dict[str, str]:
+    if isinstance(labels, dict):
+        return {str(k): str(v) for k, v in labels.items()}
+
+    out: dict[str, str] = {}
+    if isinstance(labels, list):
+        for item in labels:
+            text = str(item or "")
+            if "=" not in text:
+                continue
+            key, value = text.split("=", 1)
+            out[str(key).strip()] = str(value).strip()
+    return out
+
+
+def _coerce_label_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    parsed = yaml.safe_load(value)
+    if isinstance(parsed, (str, int, float, bool)) or parsed is None:
+        return parsed
+    return value
+
+
+def collect_storage_manager_registrations(*, stack_content: str) -> list[dict[str, Any]]:
+    payload = yaml.safe_load(stack_content)
+    if not isinstance(payload, dict):
+        return []
+
+    services = payload.get("services")
+    if not isinstance(services, dict):
+        return []
+
+    registrations_by_service: list[tuple[str, int, dict[str, Any]]] = []
+
+    for service_name, service_payload in services.items():
+        if not isinstance(service_payload, dict):
+            continue
+
+        normalized_labels = _normalize_compose_labels(service_payload.get("labels"))
+        buckets: dict[int, dict[str, Any]] = {}
+
+        for label_key, label_value in normalized_labels.items():
+            match = _STORAGE_MANAGER_LABEL_PATTERN.match(label_key)
+            if not match:
+                continue
+
+            index = int(match.group(1))
+            key = str(match.group(2)).strip()
+            if not key:
+                continue
+
+            if index not in buckets:
+                buckets[index] = {}
+
+            buckets[index][key] = _coerce_label_value(label_value)
+
+        for index, values in buckets.items():
+            required = ["volume", "path", "algorithm"]
+            missing = [field for field in required if not values.get(field)]
+            if missing:
+                missing_fields = ", ".join(missing)
+                raise SystemExit(
+                    "Invalid storage-manager label registration in service "
+                    f"'{service_name}' index {index}: missing required fields: {missing_fields}"
+                )
+
+            params = {
+                key: value
+                for key, value in values.items()
+                if key not in {"volume", "path", "algorithm", "description"}
+            }
+
+            registration: dict[str, Any] = {
+                "volume_name": str(values["volume"]),
+                "path": str(values["path"]),
+                "algorithm": str(values["algorithm"]),
+                "params": params,
+                "source_service": str(service_name),
+                "source_index": index,
+            }
+            if values.get("description") is not None:
+                registration["description"] = str(values["description"])
+
+            registrations_by_service.append((str(service_name), index, registration))
+
+    registrations_by_service.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in registrations_by_service]
+
+
+def _storage_manager_register_url(api_url: str) -> str:
+    base = str(api_url or "").strip().rstrip("/")
+    if base.endswith("/api/register"):
+        return base
+    return f"{base}/api/register"
+
+
+def register_storage_manager_registrations(
+    *,
+    api_url: str,
+    registrations: list[dict[str, Any]],
+    timeout_seconds: int = 10,
+) -> None:
+    endpoint = _storage_manager_register_url(api_url)
+
+    for item in registrations:
+        payload: dict[str, Any] = {
+            "volume_name": item["volume_name"],
+            "path": item["path"],
+            "algorithm": item["algorithm"],
+            "params": item.get("params") or {},
+        }
+        if item.get("description"):
+            payload["description"] = item["description"]
+
+        response = requests.post(endpoint, json=payload, timeout=timeout_seconds)
+        if response.status_code < 200 or response.status_code >= 300:
+            detail = str(response.text or "").strip()
+            source_service = str(item.get("source_service") or "unknown")
+            source_index = str(item.get("source_index") or "?")
+            raise SystemExit(
+                f"Storage registration failed for {source_service}[{source_index}] via {endpoint}: "
+                f"HTTP {response.status_code} {detail}"
+            )
+
+
 def main(argv: list[str] | None = None, repo_root_override: Path | None = None) -> None:
     parser = argparse.ArgumentParser(description="Deploy to Ubuntu server via Portainer stack webhook")
     parser.add_argument(
@@ -370,6 +502,14 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         "--skip-build-push",
         action="store_true",
         help="Skip default local docker build+push before deployment",
+    )
+    parser.add_argument(
+        "--storage-manager-api-url",
+        default=None,
+        help=(
+            "Storage Manager API base URL (e.g. https://storage.example.com or https://storage.example.com/api/register). "
+            "Resolution: CLI -> STORAGE_MANAGER_API_URL env var -> .env.deploy"
+        ),
     )
 
     args = parser.parse_args(argv)
@@ -480,6 +620,12 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     if not resolved_portainer_endpoint_id:
         resolved_portainer_endpoint_id = read_deploy_key(repo_root=repo_root, key=ENV_PORTAINER_ENDPOINT_ID)
 
+    resolved_storage_manager_api_url = str(args.storage_manager_api_url or "").strip()
+    if not resolved_storage_manager_api_url:
+        resolved_storage_manager_api_url = str(os.getenv(ENV_STORAGE_MANAGER_API_URL) or "").strip()
+    if not resolved_storage_manager_api_url:
+        resolved_storage_manager_api_url = read_deploy_key(repo_root=repo_root, key=ENV_STORAGE_MANAGER_API_URL)
+
     resolved_ghcr_username = str(os.getenv(ENV_GHCR_USERNAME) or "").strip()
     if not resolved_ghcr_username:
         resolved_ghcr_username = read_deploy_key(repo_root=repo_root, key=ENV_GHCR_USERNAME)
@@ -519,7 +665,7 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     compose_files = (
         [s.strip() for s in resolved_compose_files_raw.split(",") if s.strip()]
         if resolved_compose_files_raw
-        else ["docker-compose.yml"]
+        else ["docker/docker-compose.yml"]
     )
 
     # Validate required local files exist.
@@ -538,6 +684,8 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
         stack_content=stack_file_content_remote,
         app_image=resolved_app_image,
     )
+    storage_registrations = collect_storage_manager_registrations(stack_content=stack_file_content)
+    stack_includes_storage_manager = "storage-manager" in str(stack_file_content)
 
     registration_service_name = resolved_portainer_stack_name or remote_dir.name
     try:
@@ -556,6 +704,8 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
     log_info(f"Target: {resolved_host}")
     log_info(f"Remote dir: {remote_dir}")
     log_info(f"Compose files: {compose_files}")
+    if storage_registrations:
+        log_info(f"Detected {len(storage_registrations)} storage-manager label registration(s)", icon="🧹")
 
     log_step("Checking SSH connectivity", icon="🔌")
     try:
@@ -766,6 +916,25 @@ def main(argv: list[str] | None = None, repo_root_override: Path | None = None) 
             )
     else:
         log_info("PUBLIC_DOMAIN not set — skipping Caddy registration.", icon="⚠️")
+
+    if storage_registrations:
+        if resolved_storage_manager_api_url:
+            log_step("Registering storage-manager labels via API", icon="🧹")
+            register_storage_manager_registrations(
+                api_url=resolved_storage_manager_api_url,
+                registrations=storage_registrations,
+            )
+        else:
+            if stack_includes_storage_manager:
+                log_info(
+                    "Storage-manager labels detected; STORAGE_MANAGER_API_URL not set. Registration remains active via storage-manager Docker label auto-discovery (no action required).",
+                    icon="ℹ️",
+                )
+            else:
+                log_info(
+                    "Storage-manager labels were detected but STORAGE_MANAGER_API_URL is not set; skipping registration.",
+                    icon="⚠️",
+                )
 
     print("[ubuntu-deploy] ✅ Done.")
 

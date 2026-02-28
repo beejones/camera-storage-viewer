@@ -1,7 +1,7 @@
 # Refactor Deploy Scripts to use Docker Compose as Source of Truth
 
 ## Goal Description
-The goal is to remove hardcoded dependencies and configuration duplication in the deploy scripts ([azure_deploy_container.py](file:///home/ronny/dev/protected-azure-container/scripts/deploy/azure_deploy_container.py)). Instead, the structure and configuration of the containers should be derived from [docker-compose.yml](file:///home/ronny/dev/protected-azure-container/docker-compose.yml), ensuring it is the single source of truth.
+The goal is to remove hardcoded dependencies and configuration duplication in the deploy scripts ([azure_deploy_container.py](file:///home/ronny/dev/protected-azure-container/scripts/deploy/azure_deploy_container.py)). Instead, the structure and configuration of the containers should be derived from [docker/docker-compose.yml](file:///home/ronny/dev/protected-azure-container/docker/docker-compose.yml), ensuring it is the single source of truth.
 
 ## User Review Required
 > [!IMPORTANT]
@@ -22,7 +22,7 @@ A new module to handle `docker compose` interactions.
 - Import `docker_compose_helpers`.
 - Load docker compose configuration at the start of [main()](file:///home/ronny/dev/protected-azure-container/scripts/deploy/azure_deploy_container.py#162-1058).
 - **[NEW]** Implement "Smart Service Detection":
-    - Iterate through all services in [docker-compose.yml](file:///home/ronny/dev/protected-azure-container/docker-compose.yml).
+    - Iterate through all services in [docker/docker-compose.yml](file:///home/ronny/dev/protected-azure-container/docker/docker-compose.yml).
     - Identify **Caddy** service: matches name `caddy`, `tls-proxy` OR uses image starting with `caddy`.
     - Identify **App** service: The remaining service, or check for [build](file:///home/ronny/dev/protected-azure-container/scripts/deploy/azure_deploy_container_helpers.py#520-526) definition.
     - If detection fails or is ambiguous, fall back to args (or defaults).
@@ -47,7 +47,7 @@ A new module to handle `docker compose` interactions.
 - Run `pytest tests/deploy/test_docker_compose_helpers.py`.
 - Run `scripts/deploy/azure_deploy_container.py --help` to verify argument parsing still works.
 - Existing tests (if any) should pass.
-- I will run a "dry run" of the deploy script (or just the config loading part) to verify it correctly reads from [docker-compose.yml](file:///home/ronny/dev/protected-azure-container/docker-compose.yml).
+- I will run a "dry run" of the deploy script (or just the config loading part) to verify it correctly reads from [docker/docker-compose.yml](file:///home/ronny/dev/protected-azure-container/docker/docker-compose.yml).
 
 ### Manual Verification
-- Verify that changing a port in [docker-compose.yml](file:///home/ronny/dev/protected-azure-container/docker-compose.yml) is reflected in the generated deploy YAML (I can inspect the specific "wrote: ..." file output).
+- Verify that changing a port in [docker/docker-compose.yml](file:///home/ronny/dev/protected-azure-container/docker/docker-compose.yml) is reflected in the generated deploy YAML (I can inspect the specific "wrote: ..." file output).

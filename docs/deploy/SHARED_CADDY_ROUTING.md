@@ -9,7 +9,7 @@ Incoming requests are matched by domain name in `docker/proxy/Caddyfile` and rou
 
 Registration is **fully automated** by the `ubuntu_deploy.py` script.  All you need to do is:
 
-1. Prepare your project's `docker-compose.yml` (network + container name).
+1. Prepare your project's `docker/docker-compose.yml` (network + container name).
 2. Set the right env vars in `.env.deploy`.
 3. Run `ubuntu_deploy.py` — the Caddyfile is updated and Caddy reloaded for you.
 

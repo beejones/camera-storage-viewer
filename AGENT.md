@@ -11,13 +11,14 @@
   source .venv/bin/activate && python run.py
   ```
 
-### 2. Development Standards
+## 2. Development Standards
 ### Code Quality
 - **Style**: Follow **PEP 8**. Use **f-strings** for formatting.
-- **Logging**: Use `logging` module at `DEBUG` level. Use prefixes: `[FTP]:`, `[INGEST]:`, `[WEB]:`, `[DEPLOY]:`.
+- **Logging**: Use `logging` module at `DEBUG` level. Use prefixes: `[STORE]:`, `[COLLECTOR]:`, `[TRADER]:`.
 - **Error Handling**: Use `try-except` blocks. Fail gracefully; avoid complex fallback mechanisms unless strictly necessary for reliability.
 - **Bugs**: If bugs like uncaught exceptions are reported, we need to automatically add a test (pytest or UI) to make sure the error does not occur again.
-- **Arguments**: Avoid optional arguments (`arg=None`) unless strictly necessary to prevent ambiguity/bugs. Use dict only when necessary. Prioritize using data classes
+- **Arguments**: Avoid optional arguments (`arg=None`) unless strictly necessary to prevent ambiguity/bugs. Use dict and ANY type only when necessary. Prioritize using data classes. Do strict input validation on arguments. Use strict-typing.
+- **Fallback code**: Use fallbacks wisely where they cover for transient events such as API calls and timeouts. In the other cases prioritize gracefull failing
 - **Cleanup**: Delete obsolete code immediately.
 - **Permissions**: You have permission to run tests without asking.
 
@@ -33,13 +34,18 @@
 - `src/`: Application source (FTP server, ingest, thumbnails, viewer API/index).
 - `scripts/deploy/`: Deploy automation (ACI + Ubuntu/Portainer).
 - `docker/`: Dockerfiles, compose files, Caddy, startup scripts.
+- `src/common/`: Shared utilities and core logic. **Reuse code from here whenever possible.**
 - `debug/`: Verification and one-off scripts. **Do NOT pollute the root directory.**
+- `out/`: Temporary output files including PR reviews and test reports.
+- `logs/`: Application logs (`logs/app.log`).
 - `tests/pytests/`: Unit and integration tests.
+- `tests/UI/`: UI tests using playwright
 - `planning/`: Planning files. Planning file must have a checkable task overview and clear phase exit criteria. The first phase in a plan should always be optimizing the module we are going to change. See (`docs/CODE_PROMPTS.md`) section ## cleanup. Also check if docs must be merged or are obsolete.
 - `docs/`: Documentation. Each major topic should have a doc. 
 
 ## 3. Workflows & Preferences
 ### User Preferences
+- **CSV Exports**: Use semicolon (`;`) delimiter and comma (`,`) for decimals (Excel-friendly).
 - **PR Reviews**: Return reports as raw markdown files (e.g., `Review.md`).
 
 ### Testing Context

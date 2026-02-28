@@ -28,7 +28,9 @@ services:
     environment:
       POSTGRES_PASSWORD: secret
 """
-    d = tmp_path / "docker-compose.yml"
+    docker_dir = tmp_path / "docker"
+    docker_dir.mkdir(parents=True, exist_ok=True)
+    d = docker_dir / "docker-compose.yml"
     d.write_text(compose_content)
     return tmp_path
 
