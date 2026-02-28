@@ -20,6 +20,7 @@ from scripts.deploy.portainer_helpers import (
     build_portainer_webhook_urls_from_token,
     build_portainer_webhook_url,
     extract_ssh_hostname,
+    is_portainer_access_token_valid,
     portainer_ensure_running_remote_cmd,
 )
 
@@ -111,6 +112,62 @@ def test_build_portainer_webhook_urls_from_token_includes_fallback_endpoint():
         "https://192.168.1.45:9943/api/stacks/webhooks/abc123token",
         "https://192.168.1.45:9943/api/webhooks/abc123token",
     ]
+
+
+def test_is_portainer_access_token_valid_true_on_ok_response(monkeypatch):
+    class DummyResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{"Id": 1, "Name": "local"}]
+
+    def fake_get(url, headers, verify, timeout):
+        assert url == "https://192.168.1.45:9943/api/endpoints"
+        assert headers == {"X-API-Key": "token-123"}
+        assert verify is True
+        assert timeout == 20
+        return DummyResponse()
+
+    monkeypatch.setattr("scripts.deploy._upstream.scripts.deploy.portainer_helpers.requests.get", fake_get)
+
+    assert (
+        is_portainer_access_token_valid(
+            host="ronny@192.168.1.45",
+            https_port=9943,
+            insecure=False,
+            access_token="token-123",
+        )
+        is True
+    )
+
+
+def test_is_portainer_access_token_valid_false_on_401(monkeypatch):
+    class DummyResponse:
+        status_code = 401
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return []
+
+    def fake_get(url, headers, verify, timeout):
+        return DummyResponse()
+
+    monkeypatch.setattr("scripts.deploy._upstream.scripts.deploy.portainer_helpers.requests.get", fake_get)
+
+    assert (
+        is_portainer_access_token_valid(
+            host="ronny@192.168.1.45",
+            https_port=9943,
+            insecure=True,
+            access_token="expired",
+        )
+        is False
+    )
 
 
 def test_read_deploy_secret_key_reads_token(tmp_path: Path):

@@ -33,6 +33,11 @@ def extract_ssh_hostname(host: str) -> str:
     return host.split("@", 1)[1] if "@" in host else host
 
 
+from _upstream.scripts.deploy.portainer_helpers import (
+    is_portainer_access_token_valid,
+)
+
+
 def resolve_portainer_webhook_url_via_api(
     *,
     host: str,
