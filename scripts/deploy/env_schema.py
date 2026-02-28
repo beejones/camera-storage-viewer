@@ -122,7 +122,6 @@ class VarsEnum(str, Enum):
     FTP_USERNAME = "FTP_USERNAME"
     FTP_CAMERA_ID = "FTP_CAMERA_ID"
     FTP_DEV_DEFAULTS = "FTP_DEV_DEFAULTS"
-    RETENTION_DAYS = "RETENTION_DAYS"
 
 
 class SecretsEnum(str, Enum):
@@ -304,12 +303,6 @@ RUNTIME_SCHEMA: tuple[EnvKeySpec, ...] = (
         key=VarsEnum.FTP_DEV_DEFAULTS,
         mandatory=False,
         default="false",
-        targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
-    ),
-    EnvKeySpec(
-        key=VarsEnum.RETENTION_DAYS,
-        mandatory=False,
-        default="30",
         targets=frozenset({EnvTarget.DOTENV_RUNTIME}),
     ),
 )
@@ -546,7 +539,7 @@ DEPLOY_SCHEMA: tuple[EnvKeySpec, ...] = (
     EnvKeySpec(
         key=VarsEnum.UBUNTU_COMPOSE_FILES,
         mandatory=False,
-        default="docker-compose.yml",
+        default="docker/docker-compose.yml",
         targets=frozenset({EnvTarget.DOTENV_DEPLOY, EnvTarget.GH_ACTIONS_VAR}),
     ),
     EnvKeySpec(

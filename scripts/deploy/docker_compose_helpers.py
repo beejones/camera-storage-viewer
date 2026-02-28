@@ -42,12 +42,9 @@ def load_docker_compose_config(cwd: Path) -> Dict[str, Any]:
     Returns the parsed configuration dictionary.
     """
 
-    # Canonical location is docker/docker-compose.yml.
-    # We keep a fallback to repo-root docker-compose.yml for backwards compatibility.
-    candidates = [cwd / "docker" / "docker-compose.yml", cwd / "docker-compose.yml"]
-    compose_path = next((p for p in candidates if p.exists()), None)
-    if not compose_path:
-        raise FileNotFoundError(f"docker/docker-compose.yml not found in {cwd} (also checked repo-root docker-compose.yml)")
+    compose_path = cwd / "docker" / "docker-compose.yml"
+    if not compose_path.exists():
+        raise FileNotFoundError(f"docker/docker-compose.yml not found in {cwd}")
 
     try:
         with open(compose_path, "r") as f:

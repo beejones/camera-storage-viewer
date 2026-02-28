@@ -1,6 +1,6 @@
 # Add your own app to the container
 
-This repo supports deploying an app to **Azure Container Instances** (ACI) using **docker-compose.yml as the source of truth**.
+This repo supports deploying an app to **Azure Container Instances** (ACI) using **docker/docker-compose.yml as the source of truth**.
 
 The deploy engine reads Compose to determine:
 - which service is the **app** vs **sidecar** (via `x-deploy-role`)
@@ -10,7 +10,7 @@ The deploy engine reads Compose to determine:
 See the Compose expectations here: [docs/deploy/COMPOSE_CONTRACT.md](COMPOSE_CONTRACT.md).
 
 ## Recommended approach
-1. Define your services in `docker-compose.yml`.
+1. Define your services in `docker/docker-compose.yml`.
 	- Mark the “main app” with `x-deploy-role: app`.
 	- Mark a reverse-proxy (if used) with `x-deploy-role: sidecar`.
 2. Put the runtime contract in Compose (command/ports/env).

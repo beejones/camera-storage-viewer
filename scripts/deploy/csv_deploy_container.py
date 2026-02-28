@@ -270,7 +270,7 @@ def main() -> None:
     parser.add_argument(
         "--compose-file",
         default=None,
-        help="Path to docker-compose.yml used as the source of truth for web/caddy defaults (optional)",
+        help="Path to docker/docker-compose.yml used as the source of truth for web/caddy defaults (optional)",
     )
 
     parser.add_argument(
@@ -286,17 +286,17 @@ def main() -> None:
     parser.add_argument(
         "--compose-app-service",
         default=None,
-        help="Service name in docker-compose.yml for the web app (default: x-deploy-role=app or 'web')",
+        help="Service name in docker/docker-compose.yml for the web app (default: x-deploy-role=app or 'web')",
     )
     parser.add_argument(
         "--compose-caddy-service",
         default=None,
-        help="Service name in docker-compose.yml for the Caddy sidecar (default: x-deploy-role=sidecar or 'caddy')",
+        help="Service name in docker/docker-compose.yml for the Caddy sidecar (default: x-deploy-role=sidecar or 'caddy')",
     )
     parser.add_argument(
         "--compose-ftp-service",
         default=None,
-        help="Service name in docker-compose.yml for the FTP service (default: x-deploy-role=ftp or 'ftp')",
+        help="Service name in docker/docker-compose.yml for the FTP service (default: x-deploy-role=ftp or 'ftp')",
     )
 
     parser.add_argument(
@@ -993,7 +993,7 @@ def main() -> None:
     ftp_memory_gb = _float_env_or_default(VarsEnum.FTP_MEMORY_GB.value, memory_gb)
 
     repo_root = Path(__file__).resolve().parents[2]
-    compose_path = Path(args.compose_file) if args.compose_file else (repo_root / "docker-compose.yml")
+    compose_path = Path(args.compose_file) if args.compose_file else (repo_root / "docker" / "docker-compose.yml")
     try:
         compose_defaults = derive_defaults(
             compose_path=compose_path,

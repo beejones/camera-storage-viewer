@@ -213,7 +213,7 @@ any network or SSH action — zero flags, all config from files.
 
 2. **`docker/docker-compose.ubuntu.yml` compose override** — Uses `ubuntu_start.sh` as entrypoint,
    mounts `ENV_DIR` (default `/opt/camera-storage-viewer`) as the env source directory.  The main
-   `docker-compose.yml` remains unchanged and usable standalone for Azure/local.
+   `docker/docker-compose.yml` remains unchanged and usable standalone for Azure/local.
 
 3. **Proxy Caddyfile** — Uses `{$PUBLIC_DOMAIN}` placeholder + portainer subdomain.  Update the
    Portainer route to `portainer.<PUBLIC_DOMAIN>` (parameterised) instead of the hardcoded

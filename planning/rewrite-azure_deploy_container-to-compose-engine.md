@@ -6,7 +6,7 @@ Right now we have two competing realities:
 - **Goal:** Docker Compose is the single source of truth, and repo-specific deploy customization lives in hooks.
 - **Reality:** `scripts/deploy/azure_deploy_container.py` still embodies the upstream “protected-azure-container / code-server” deployment shape (e.g. `CODE_SERVER_PORT`), which can produce an ACI container group that boots Caddy but crashes the app container for camera-storage-viewer.
 
-This plan rewrites `scripts/deploy/azure_deploy_container.py` so it **derives the deploy spec from `docker-compose.yml`**, and uses **deploy hooks** to customize behavior without forking core logic.
+This plan rewrites `scripts/deploy/azure_deploy_container.py` so it **derives the deploy spec from `docker/docker-compose.yml`**, and uses **deploy hooks** to customize behavior without forking core logic.
 
 ## Non-Goals
 - Do not require Docker engine on the machine running the deploy script.
@@ -22,7 +22,7 @@ This plan rewrites `scripts/deploy/azure_deploy_container.py` so it **derives th
 
 ## Success Criteria (Acceptance)
 - Running `python scripts/deploy/azure_deploy_container.py ...` produces an ACI container group definition that boots the **web** container successfully for this repo.
-- The script chooses app/sidecar/ftp services from `docker-compose.yml` using `x-deploy-role` first.
+- The script chooses app/sidecar/ftp services from `docker/docker-compose.yml` using `x-deploy-role` first.
 - Hooks remain the customization layer (default auto-load: `scripts/deploy/deploy_customizations.py`).
 - No lingering `CODE_SERVER_PORT` assumptions in the viewer deployment path.
 - Tests remain green and we add/adjust tests to protect the new behavior.
